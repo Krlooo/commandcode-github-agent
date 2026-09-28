@@ -1,6 +1,6 @@
 {
   "name": "Command Code Agent",
-  "description": "Run Command Code from a /cmd comment: implements the task, verifies it, reviews itself and opens a pull request - all inside GitHub Actions.",
+  "description": "Run Command Code from an @commandcode-agent mention or an issue assignment: implements the task, verifies it, reviews itself and opens a pull request - all inside GitHub Actions.",
   "url": "https://github.com/Krlooo/commandcode-github-agent",
   "redirect_url": "http://localhost:8765/callback",
   "public": true,
@@ -8,6 +8,7 @@
     "contents": "write",
     "issues": "write",
     "pull_requests": "write",
+    "workflows": "write",
     "metadata": "read"
   },
   "default_events": []
