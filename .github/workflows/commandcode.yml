@@ -13,9 +13,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
 
 concurrency:
   group: commandcode-${{ github.event.issue.number || github.run_id }}
@@ -42,9 +40,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The app token replaces the workflow GITHUB_TOKEN for the agent: comments,
+      # reactions and pushes carry the commandcode-agent[bot] identity, and -
+      # unlike GITHUB_TOKEN - PRs opened with it DO trigger other workflows (CI).
+      - name: Create the app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Run the Command Code agent
         uses: ./
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           verify-command: "npm ci && npm test && npm run typecheck"
           # Command Code API key from https://commandcode.ai/settings/keys, stored as
           # the AGENT_API_KEY secret. This is the documented CI auth path: the CLI
