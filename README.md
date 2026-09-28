@@ -1,6 +1,6 @@
 # Command Code GitHub Agent
 
-Mention `/cmd` (or `/commandcode`) in an issue or pull request comment and the agent works on it
+Mention `/cmd` (or `/commandcode`, or `@commandcode-agent`) in an issue or pull request comment and the agent works on it
 inside your own repository's GitHub Actions: it implements the change, verifies it, reviews its own
 work and opens a pull request. No external bot service, no code leaving your runners against your
 will — just a composite action wrapping the [Command Code](https://commandcode.ai/docs) CLI.
@@ -14,9 +14,10 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
    ->  reviewer agent  ->  commit / push  ->  pull request  ->  report comment
 ```
 
-1. **Trigger** — a `/cmd` (or `/commandcode`) comment, an issue opened with the `commandcode`
-   label, or a manual `workflow_dispatch`. The trigger comment receives an 👀 reaction while the
-   run is in progress, replaced with 🚀 on success (and 👎 on failure).
+1. **Trigger** — a `/cmd`, `/commandcode` or `@commandcode-agent` comment; an issue opened with
+   (or labeled) `commandcode`; an issue assigned to the app; or a manual `workflow_dispatch`. The
+   trigger comment receives an 👀 reaction while the run is in progress, replaced with 🚀 on
+   success (and 👎 on failure).
 2. **Permission gate** — the actor must be a collaborator with `write` or `admin` access. Anyone
    else gets an explanatory comment and the run stops. Events authored by a bot are ignored.
 3. **Branch** — for an issue the agent branches `commandcode/issue-<n>-<timestamp>` off the default
@@ -41,8 +42,8 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
 2. Create a Command Code API key (https://commandcode.ai/settings/keys), store it as a secret
    (e.g. `AGENT_API_KEY`) and pass it as `command-code-api-key` in the `with:` block, together
    with a `model` id from your plan. (BYOK is the alternative — see [Auth](#auth).)
-3. Comment `/cmd fix the flaky login test` on an issue (or add the `commandcode` label to a new
-   issue).
+3. Comment `/cmd fix the flaky login test` (or mention `@commandcode-agent`, or add the
+   `commandcode` label, or assign the issue to the app).
 
 The action requires **Node.js 22** (it sets it up with `actions/setup-node` before installing the
 Command Code CLI), so you do not need to add a Node setup step yourself.
@@ -60,7 +61,7 @@ permissions:
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `mentions` | `/cmd,/commandcode` | Comma-separated trigger strings; a comment starting a line with one of them (at a word boundary) starts the agent. |
+| `mentions` | `/cmd,/commandcode,@commandcode-agent` | Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent. |
 | `model` | — | Model identifier passed to the Command Code CLI (`-m`). Required when `provider-api-key` is set. |
 | `max-turns` | `100` | Maximum number of agent turns per agent run (implementer and reviewer). |
 | `verify-command` | — | Command run after the implementer agent to verify the change (e.g. `npm ci && npm test`). |
@@ -143,9 +144,13 @@ In short: bring your own provider key via a secret; the model is billed to that 
 - **Prompt-injection sanitization** — issue and PR text is stripped of HTML comments, zero-width
   and bidi control characters before it reaches a prompt, and the remaining context is explicitly
   marked as untrusted "information only".
-- **Scoped token** — `GITHUB_TOKEN` in the step is limited to the job's declared `permissions`.
-- **Token pushes** — commits pushed with `GITHUB_TOKEN` do **not** trigger other workflows (a
-  GitHub platform behavior). The GitHub App phase below is intended to lift that limitation.
+- **Scoped token** — the action uses the `github-token` you pass (default: the workflow token,
+  limited to the job's `permissions`). With the optional GitHub App setup (`app/`,
+  `actions/create-github-app-token`), the agent acts under a bot identity with a short-lived
+  installation token.
+- **Token pushes** — commits pushed with the plain `GITHUB_TOKEN` do **not** trigger other
+  workflows (a GitHub platform behavior); using the app token lifts that limitation (the dogfood
+  workflow in this repository does).
 
 ## Limitations / roadmap
 
@@ -153,8 +158,8 @@ In short: bring your own provider key via a secret; the model is billed to that 
   repository is a fork.
 - **Single-run evidence** — there is no live, streaming progress comment during a run; you get the
   reaction while it works and the final report comment when it finishes.
-- **GitHub App phase** — a dedicated GitHub App identity with short-lived tokens, which also
-  enables fork support and workflow chaining.
+- **GitHub App** — a dedicated app (`app/`) provides a bot identity with short-lived, revocable
+  tokens and enables workflow chaining; fork-PR support is still pending.
 
 ## Links
 

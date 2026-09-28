@@ -283,7 +283,11 @@ ${body}`;
   }
   if (eventName === "issues") {
     const action = asString(root["action"]);
-    if (action !== "opened" && action !== "labeled") return null;
+    if (action !== "opened" && action !== "labeled" && action !== "assigned") return null;
+    if (action === "assigned") {
+      const assignee = asString(asRecord(root["assignee"])?.["login"]);
+      if (assignee === void 0 || !assignee.endsWith("[bot]")) return null;
+    }
     const issue = asRecord(root["issue"]);
     const number = asNumber(issue?.["number"]);
     if (!issue || number === void 0) return null;
@@ -669,7 +673,7 @@ function errorMessage(error) {
 }
 function parseMentions(value) {
   const mentions = value.split(",").map((mention) => mention.trim()).filter((mention) => mention.length > 0);
-  return mentions.length > 0 ? mentions : ["/cmd", "/commandcode"];
+  return mentions.length > 0 ? mentions : ["/cmd", "/commandcode", "@commandcode-agent"];
 }
 function formatDuration(ms) {
   const seconds = Math.max(0, Math.round(ms / 1e3));

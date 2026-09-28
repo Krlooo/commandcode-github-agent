@@ -56,6 +56,12 @@ describe("extractPrompt", () => {
   it("trims surrounding whitespace and keeps the rest of the body", () => {
     expect(extractPrompt("/cmd   do X\nand also Y  ", mentions)).toBe("do X\nand also Y");
   });
+
+  it("supports a bot-mention trigger", () => {
+    expect(extractPrompt("@commandcode-agent fix the flaky test", ["@commandcode-agent"])).toBe(
+      "fix the flaky test",
+    );
+  });
 });
 
 describe("parseTrigger", () => {
@@ -135,6 +141,30 @@ describe("parseTrigger", () => {
     const trigger = parseTrigger("issues", payload, mentions);
     expect(trigger?.kind).toBe("issues");
     expect(trigger?.prompt).toContain("Fix the flaky test");
+  });
+
+  it("parses an issue assigned to a bot the same way as an opened one", () => {
+    const payload = {
+      action: "assigned",
+      issue: { ...issue, labels: [] },
+      assignee: { login: "commandcode-agent[bot]" },
+      repository: repo,
+      sender: { login: "carlos" },
+    };
+    const trigger = parseTrigger("issues", payload, mentions);
+    expect(trigger?.kind).toBe("issues");
+    expect(trigger?.prompt).toContain("Fix the flaky test");
+  });
+
+  it("ignores an issue assigned to a human", () => {
+    const payload = {
+      action: "assigned",
+      issue: { ...issue, labels: [] },
+      assignee: { login: "carlos" },
+      repository: repo,
+      sender: { login: "carlos" },
+    };
+    expect(parseTrigger("issues", payload, mentions)).toBeNull();
   });
 
   it("parses a workflow_dispatch with a prompt input", () => {

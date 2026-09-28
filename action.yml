@@ -8,9 +8,9 @@ branding:
 
 inputs:
   mentions:
-    description: "Comma-separated trigger strings; a comment starting a line with one of them (at a word boundary) starts the agent."
+    description: "Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent (e.g. /cmd, /commandcode, @commandcode-agent)."
     required: false
-    default: "/cmd,/commandcode"
+    default: "/cmd,/commandcode,@commandcode-agent"
   model:
     description: "Model identifier passed to the Command Code CLI (-m). Required when provider-api-key is set."
     required: false
