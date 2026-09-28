@@ -221,6 +221,7 @@ export async function main(): Promise<number> {
     env("COMMAND_CODE_API_KEY"),
     env("INPUT_PROVIDER_API_KEY"),
     env("CMD_AGENT_PROVIDER_KEY"),
+    env("INPUT_AGENT_TOKEN"),
   ]);
   const logError = (message: string, error?: unknown): void => {
     const detail = error === undefined ? "" : ` ${errorMessage(error)}`;
@@ -418,6 +419,11 @@ export async function main(): Promise<number> {
       return 1;
     }
 
+    // A read-only token for the agent: it lets the agent consult other issues
+    // and pull requests with the gh CLI. The write token never enters its env.
+    const agentReadToken = env("INPUT_AGENT_TOKEN");
+    if (agentReadToken) envOverrides["GH_TOKEN"] = agentReadToken;
+
     const taskContext: TaskContext = {
       owner: trigger.owner,
       repo: trigger.repo,
@@ -429,6 +435,7 @@ export async function main(): Promise<number> {
       branch,
       task: trigger.prompt,
       attachments: attachmentPaths,
+      ghReadAccess: agentReadToken.length > 0,
     };
 
     // 6) Implementer agent.
@@ -596,6 +603,7 @@ main()
           env("COMMAND_CODE_API_KEY"),
           env("INPUT_PROVIDER_API_KEY"),
           env("CMD_AGENT_PROVIDER_KEY"),
+          env("INPUT_AGENT_TOKEN"),
         ]),
       ),
     );

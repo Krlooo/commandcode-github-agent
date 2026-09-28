@@ -575,6 +575,14 @@ function buildImplementerPrompt(ctx) {
   lines.push("- Make the changes directly in the working tree; do not push.");
   lines.push("- The harness commits, pushes and opens the PR for you, so do not open pull requests.");
   lines.push("- run the project's checks when available (the test, lint and build commands).");
+  if (ctx.ghReadAccess) {
+    lines.push(
+      "- This repository's issues and pull requests are readable with the gh CLI (GH_TOKEN is set): gh issue view <n>, gh pr view <n>, gh issue list. Use it when the task references them."
+    );
+  }
+  lines.push(
+    '- Write for people: plain sentences, no em dashes, no bold labels on every bullet, no marketing tone, no "not X but Y" constructions.'
+  );
   lines.push("- Finish with a concise summary of what you did, or with your answer when the task was a question.");
   return lines.join("\n");
 }
@@ -613,6 +621,9 @@ function buildReviewerPrompt(ctx, evidence) {
   lines.push("- Do not push, do not create branches, do not open pull requests.");
   lines.push("- Run the checks again after fixing.");
   lines.push("- End with a concise review summary: what is correct, what you fixed, and any remaining risk.");
+  lines.push(
+    "- Write for people: plain sentences, no em dashes, no bold labels on every bullet, no marketing tone."
+  );
   return lines.join("\n");
 }
 
@@ -942,7 +953,8 @@ async function main() {
     env("INPUT_COMMAND_CODE_API_KEY"),
     env("COMMAND_CODE_API_KEY"),
     env("INPUT_PROVIDER_API_KEY"),
-    env("CMD_AGENT_PROVIDER_KEY")
+    env("CMD_AGENT_PROVIDER_KEY"),
+    env("INPUT_AGENT_TOKEN")
   ]);
   const logError = (message, error) => {
     const detail = error === void 0 ? "" : ` ${errorMessage(error)}`;
@@ -1112,6 +1124,8 @@ async function main() {
       await react("-1");
       return 1;
     }
+    const agentReadToken = env("INPUT_AGENT_TOKEN");
+    if (agentReadToken) envOverrides["GH_TOKEN"] = agentReadToken;
     const taskContext = {
       owner: trigger.owner,
       repo: trigger.repo,
@@ -1122,7 +1136,8 @@ async function main() {
       comments,
       branch,
       task: trigger.prompt,
-      attachments: attachmentPaths
+      attachments: attachmentPaths,
+      ghReadAccess: agentReadToken.length > 0
     };
     const implementer = await runAgent({
       prompt: buildImplementerPrompt(taskContext),
@@ -1263,7 +1278,8 @@ main().then((code) => {
         env("GITHUB_TOKEN"),
         env("COMMAND_CODE_API_KEY"),
         env("INPUT_PROVIDER_API_KEY"),
-        env("CMD_AGENT_PROVIDER_KEY")
+        env("CMD_AGENT_PROVIDER_KEY"),
+        env("INPUT_AGENT_TOKEN")
       ])
     )
   );

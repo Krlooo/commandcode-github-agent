@@ -56,10 +56,23 @@ jobs:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
+      # A second, read-only token handed to the agent so it can consult other
+      # issues and pull requests with the gh CLI. The write token stays here.
+      - name: Create a read-only token for the agent
+        id: agent-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+
       - name: Run the Command Code agent
         uses: ./
         with:
           github-token: ${{ steps.app-token.outputs.token }}
+          agent-token: ${{ steps.agent-token.outputs.token }}
           verify-command: "npm ci && npm test && npm run typecheck"
           # Command Code API key from https://commandcode.ai/settings/keys, stored as
           # the AGENT_API_KEY secret. This is the documented CI auth path: the CLI
