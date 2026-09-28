@@ -125,6 +125,18 @@ describe("parseTrigger", () => {
     expect(parseTrigger("issues", payload, mentions)).toBeNull();
   });
 
+  it("parses a labeled issue the same way as an opened one", () => {
+    const payload = {
+      action: "labeled",
+      issue: { ...issue, labels: [{ name: "commandcode" }] },
+      repository: repo,
+      sender: { login: "carlos" },
+    };
+    const trigger = parseTrigger("issues", payload, mentions);
+    expect(trigger?.kind).toBe("issues");
+    expect(trigger?.prompt).toContain("Fix the flaky test");
+  });
+
   it("parses a workflow_dispatch with a prompt input", () => {
     const payload = {
       inputs: { prompt: "add a CI badge" },

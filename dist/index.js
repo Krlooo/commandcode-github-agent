@@ -250,7 +250,8 @@ ${body}`;
     return trigger;
   }
   if (eventName === "issues") {
-    if (asString(root["action"]) !== "opened") return null;
+    const action = asString(root["action"]);
+    if (action !== "opened" && action !== "labeled") return null;
     const issue = asRecord(root["issue"]);
     const number = asNumber(issue?.["number"]);
     if (!issue || number === void 0) return null;
