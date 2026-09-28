@@ -112,6 +112,53 @@ interface SpawnOutcome {
   exitCode: number;
 }
 
+/**
+ * The environment variables the agent process is allowed to inherit.
+ *
+ * The agent runs with --yolo, so it must not see GitHub tokens, Actions
+ * runtime/OIDC tokens or the action inputs: a prompt injection in issue text
+ * could otherwise make it exfiltrate them. Everything needed to run node, npm,
+ * git and the CLI is listed here; the model credentials are applied as
+ * overrides on top.
+ */
+const AGENT_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TERM",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "SHELL",
+  "CI",
+  "USERPROFILE",
+  "SystemRoot",
+  "SystemDrive",
+  "WINDIR",
+  "ComSpec",
+  "PATHEXT",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROCESSOR_ARCHITECTURE",
+  "NUMBER_OF_PROCESSORS",
+];
+
+/** Builds the least-privilege environment for the agent process. */
+export function agentEnv(
+  source: Record<string, string | undefined>,
+  overrides: Record<string, string>,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of AGENT_ENV_ALLOWLIST) {
+    const value = source[key];
+    if (typeof value === "string") env[key] = value;
+  }
+  for (const [key, value] of Object.entries(overrides)) env[key] = value;
+  return env;
+}
+
 function spawnAgent(
   binary: string,
   args: string[],
@@ -178,7 +225,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcom
   ];
   if (options.model) args.push("-m", options.model);
 
-  const env: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}) };
+  const env = agentEnv(process.env, options.env ?? {});
 
   const { stdout, stderr, exitCode } = await spawnAgent(binary, args, {
     cwd: options.workspace,

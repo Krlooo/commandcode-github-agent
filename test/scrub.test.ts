@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { scrubSecrets } from "../src/scrub";
+import { collectSecrets, scrubSecrets } from "../src/scrub";
+
+describe("collectSecrets", () => {
+  it("drops empty and undefined values and keeps the rest", () => {
+    expect(collectSecrets(["token", "", undefined, "key"])).toEqual(["token", "key"]);
+  });
+
+  it("returns an empty list when nothing is provided", () => {
+    expect(collectSecrets([undefined, ""])).toEqual([]);
+  });
+});
 
 describe("scrubSecrets", () => {
   it("scrubs a token embedded in an x-access-token URL", () => {

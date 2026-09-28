@@ -17,7 +17,7 @@ import { parseTrigger, type Trigger } from "./event";
 import * as git from "./git";
 import { GitHubClient } from "./github";
 import { buildImplementerPrompt, buildReviewerPrompt, type TaskContext } from "./prompt";
-import { scrubSecrets } from "./scrub";
+import { collectSecrets, scrubSecrets } from "./scrub";
 
 const execFileAsync = promisify(execFile);
 
@@ -196,7 +196,14 @@ export async function main(): Promise<number> {
   // Anything that can end up in a public comment or a log must be redacted: a
   // failed `git push` embeds the command line (and thus the auth header) in its
   // error message, which would otherwise leak the token into a comment.
-  const secrets = token ? [token, git.basicAuthHeader(token)] : [];
+  const secrets = collectSecrets([
+    token,
+    token ? git.basicAuthHeader(token) : undefined,
+    env("INPUT_COMMAND_CODE_API_KEY"),
+    env("COMMAND_CODE_API_KEY"),
+    env("INPUT_PROVIDER_API_KEY"),
+    env("CMD_AGENT_PROVIDER_KEY"),
+  ]);
   const logError = (message: string, error?: unknown): void => {
     const detail = error === undefined ? "" : ` ${errorMessage(error)}`;
     console.error(scrubSecrets(`${message}${detail}`, secrets));
@@ -325,9 +332,12 @@ export async function main(): Promise<number> {
       branch = pull.head.ref;
       try {
         await git.configureAuth(workspace, token);
-        await git.fetchBranch(workspace, branch);
-        await git.checkoutBranch(workspace, branch);
-        await git.unsetAuth(workspace);
+        try {
+          await git.fetchBranch(workspace, branch);
+          await git.checkoutBranch(workspace, branch);
+        } finally {
+          await git.unsetAuth(workspace);
+        }
       } catch (error) {
         await comment(`Could not check out the pull request branch \`${branch}\`: ${errorMessage(error)}`);
         await react("-1");
@@ -461,8 +471,11 @@ export async function main(): Promise<number> {
     await git.commit(workspace, commitMessage);
 
     await git.configureAuth(workspace, token);
-    await git.push(workspace, branch);
-    await git.unsetAuth(workspace);
+    try {
+      await git.push(workspace, branch);
+    } finally {
+      await git.unsetAuth(workspace);
+    }
 
     // 11) + 12) Open a PR for issues; the push already updated the PR branch otherwise.
     let prUrl: string | null = null;
@@ -521,7 +534,15 @@ main()
   .catch((error: unknown) => {
     console.error(
       "Unhandled error in commandcode-github-agent:",
-      scrubSecrets(errorMessage(error), []),
+      scrubSecrets(
+        errorMessage(error),
+        collectSecrets([
+          env("GITHUB_TOKEN"),
+          env("COMMAND_CODE_API_KEY"),
+          env("INPUT_PROVIDER_API_KEY"),
+          env("CMD_AGENT_PROVIDER_KEY"),
+        ]),
+      ),
     );
     process.exitCode = 1;
   });

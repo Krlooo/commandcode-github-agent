@@ -13,6 +13,14 @@
 const ACCESS_TOKEN_URL = /x-access-token:[^@\s]+@/g;
 
 /**
+ * Collects the non-empty secret strings from a list of candidates, so callers
+ * can build a secrets list without repeating empty-string guards.
+ */
+export function collectSecrets(values: Array<string | undefined>): string[] {
+  return values.filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+/**
  * Returns a copy of `text` with known secrets removed:
  *
  * 1. every `x-access-token:<token>@` URL credential becomes `x-access-token:***@`;
