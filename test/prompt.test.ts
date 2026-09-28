@@ -52,6 +52,12 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).toContain("run the project's checks");
   });
 
+  it("tells the agent to answer in the thread when the task is a question", () => {
+    const prompt = buildImplementerPrompt(context());
+    expect(prompt).toContain("do not change any file");
+    expect(prompt).toMatch(/answer in your final summary/i);
+  });
+
   it("caps the number of context comments", () => {
     const many = Array.from({ length: MAX_CONTEXT_COMMENTS + 10 }, (_, i) => ({
       author: `user${i}`,

@@ -177,6 +177,23 @@ function buildReport(options: ReportOptions): string {
   return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
 }
 
+/**
+ * The comment for a conversation turn: the agent's answer plus a small footer.
+ * Used when the task was a question and no files were changed.
+ */
+function buildAnswerComment(result: AgentResult, options: { model: string; runUrl: string }): string {
+  const lines: string[] = [];
+  lines.push(summarize(result.finalText, "(the agent returned no answer)"));
+  lines.push("");
+  lines.push("---");
+  const meta: string[] = [];
+  if (options.model) meta.push(`Model: ${options.model}`);
+  if (result.sessionId) meta.push(`Session: ${result.sessionId}`);
+  meta.push(`Run: ${options.runUrl}`);
+  lines.push(meta.join(" · "));
+  return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
+}
+
 async function safeDefaultBranch(github: GitHubClient): Promise<string> {
   try {
     return (await github.getRepo()).default_branch || "main";
@@ -430,7 +447,18 @@ export async function main(): Promise<number> {
       return 1;
     }
 
-    // 7) Verification command (never throws).
+    // 7) Conversation mode: with no changes, the task was a question. Publish the
+    // answer and skip the verification, review and PR pipeline entirely.
+    const publishAnswer = async (): Promise<number> => {
+      await comment(buildAnswerComment(implementer.result, { model, runUrl }));
+      await react("rocket");
+      return 0;
+    };
+    if ((await git.statusPorcelain(workspace)).length === 0) {
+      return await publishAnswer();
+    }
+
+    // 8) Verification command (never throws).
     let verifyOutput: string | null = null;
     let verifyFailed = false;
     if (verifyCommand) {
@@ -448,7 +476,7 @@ export async function main(): Promise<number> {
       console.warn("Could not compute the diff stat:", error);
     }
 
-    // 8) Reviewer agent with a fresh session.
+    // 9) Reviewer agent with a fresh session.
     let reviewer: AgentResult | null = null;
     if (reviewEnabled) {
       const reviewRun = await runAgent({
@@ -464,14 +492,9 @@ export async function main(): Promise<number> {
       }
     }
 
-    // 9) No changes -> report and stop.
-    const changedFiles = await git.statusPorcelain(workspace);
-    if (changedFiles.length === 0) {
-      await comment(
-        `No changes were produced.\n\n${summarize(implementer.result.finalText, "(the implementer returned no summary)")}`,
-      );
-      await react("rocket");
-      return 0;
+    // The reviewer may have adjusted the tree back to empty; answer then too.
+    if ((await git.statusPorcelain(workspace)).length === 0) {
+      return await publishAnswer();
     }
 
     // 10) Commit and push.

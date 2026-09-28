@@ -66,4 +66,4 @@ jobs:
           # reads COMMAND_CODE_API_KEY at startup; no login is required.
           command-code-api-key: ${{ secrets.AGENT_API_KEY }}
           # Any model id from your Command Code plan (https://commandcode.ai/models).
-          model: "deepseek/deepseek-v4-flash"
+          model: "deepseek/deepseek-v4.1-flash"

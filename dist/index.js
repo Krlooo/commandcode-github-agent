@@ -565,11 +565,17 @@ function buildImplementerPrompt(ctx) {
   }
   lines.push("");
   lines.push("## Rules");
+  lines.push(
+    "- Decide the mode from the task: if it asks for information, an explanation, an opinion or a discussion, do not change any file; research the repository as needed and answer in your final summary using markdown."
+  );
+  lines.push(
+    "- If the task asks to create, fix, change, add or remove something, implement it in the working tree as usual."
+  );
   lines.push(`- You are already inside a git checkout of the branch ${ctx.branch}; do not create branches.`);
   lines.push("- Make the changes directly in the working tree; do not push.");
   lines.push("- The harness commits, pushes and opens the PR for you, so do not open pull requests.");
   lines.push("- run the project's checks when available (the test, lint and build commands).");
-  lines.push("- Finish with a concise summary of the changes you made.");
+  lines.push("- Finish with a concise summary of what you did, or with your answer when the task was a question.");
   return lines.join("\n");
 }
 function buildReviewerPrompt(ctx, evidence) {
@@ -904,6 +910,18 @@ function buildReport(options) {
   lines.push(`Run: ${options.runUrl}`);
   return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
 }
+function buildAnswerComment(result, options) {
+  const lines = [];
+  lines.push(summarize(result.finalText, "(the agent returned no answer)"));
+  lines.push("");
+  lines.push("---");
+  const meta = [];
+  if (options.model) meta.push(`Model: ${options.model}`);
+  if (result.sessionId) meta.push(`Session: ${result.sessionId}`);
+  meta.push(`Run: ${options.runUrl}`);
+  lines.push(meta.join(" \xB7 "));
+  return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
+}
 async function safeDefaultBranch(github) {
   try {
     return (await github.getRepo()).default_branch || "main";
@@ -1120,6 +1138,14 @@ async function main() {
       await react("-1");
       return 1;
     }
+    const publishAnswer = async () => {
+      await comment(buildAnswerComment(implementer.result, { model, runUrl }));
+      await react("rocket");
+      return 0;
+    };
+    if ((await statusPorcelain(workspace)).length === 0) {
+      return await publishAnswer();
+    }
     let verifyOutput = null;
     let verifyFailed = false;
     if (verifyCommand) {
@@ -1148,15 +1174,8 @@ async function main() {
         console.warn(`The reviewer agent failed (non-fatal): ${reviewer.error ?? "unknown error"}`);
       }
     }
-    const changedFiles = await statusPorcelain(workspace);
-    if (changedFiles.length === 0) {
-      await comment(
-        `No changes were produced.
-
-${summarize(implementer.result.finalText, "(the implementer returned no summary)")}`
-      );
-      await react("rocket");
-      return 0;
+    if ((await statusPorcelain(workspace)).length === 0) {
+      return await publishAnswer();
     }
     await configureUser(
       workspace,
