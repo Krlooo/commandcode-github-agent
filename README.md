@@ -21,7 +21,7 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
 8. Pull request: for issues it opens a PR; for pull requests it updates the branch. The body has the task, the change summary, the verification result and the review.
 9. Report comment: a final comment links the branch, the PR, the model, the agent sessions, the duration and the workflow run.
 
-If the mention asks a question or requests an explanation rather than a change, the agent replies in the thread and opens no pull request; the recent comments are part of its context, so you can keep the conversation going by mentioning it again.
+If the mention asks a question or requests an explanation rather than a change, the agent replies in the thread and opens no pull request; the recent comments are part of its context, so you can keep the conversation going by mentioning it again. With a read-only token configured, it also checks whether the question was already asked or answered in another issue or pull request and points you there.
 
 ## Quick start
 

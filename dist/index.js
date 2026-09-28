@@ -577,7 +577,7 @@ function buildImplementerPrompt(ctx) {
   lines.push("- run the project's checks when available (the test, lint and build commands).");
   if (ctx.ghReadAccess) {
     lines.push(
-      "- This repository's issues and pull requests are readable with the gh CLI (GH_TOKEN is set): gh issue view <n>, gh pr view <n>, gh issue list. Use it when the task references them."
+      "- This repository's issues and pull requests are readable with the gh CLI (GH_TOKEN is set): gh issue view <n>, gh pr view <n>, gh search. Use it when the task references them, and before answering a question, check whether it was already asked or answered in an issue or pull request: if it was, say where (issue or PR number) and what the conclusion was."
     );
   }
   lines.push(

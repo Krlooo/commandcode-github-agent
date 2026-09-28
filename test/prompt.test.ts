@@ -62,6 +62,7 @@ describe("buildImplementerPrompt", () => {
     const withToken = buildImplementerPrompt(context({ ghReadAccess: true }));
     const without = buildImplementerPrompt(context());
     expect(withToken).toContain("gh issue view");
+    expect(withToken).toMatch(/already asked or answered/i);
     expect(without).not.toContain("gh issue view");
   });
 
