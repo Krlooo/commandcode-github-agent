@@ -4,7 +4,7 @@ on:
   issue_comment:
     types: [created]
   issues:
-    types: [opened, labeled]
+    types: [opened, labeled, assigned]
   workflow_dispatch:
     inputs:
       prompt:
@@ -21,16 +21,19 @@ concurrency:
 
 jobs:
   commandcode:
-    # Admit: a non-bot comment carrying a /cmd or /commandcode trigger, an issue
-    # opened with the "commandcode" label, or a manual run. This is a coarse
-    # gate; the handler's parser applies the precise word-boundary rule.
+    # Admit: a non-bot comment carrying /cmd, /commandcode or @commandcode-agent,
+    # an issue with the "commandcode" label, an issue assigned to a bot, or a
+    # manual run. This is a coarse gate; the handler's parser applies the
+    # precise rules.
     if: >-
       (github.event_name == 'issue_comment' &&
       github.event.comment.user.type != 'Bot' &&
       (contains(github.event.comment.body, '/cmd') ||
-      contains(github.event.comment.body, '/commandcode'))) ||
+      contains(github.event.comment.body, '/commandcode') ||
+      contains(github.event.comment.body, '@commandcode-agent'))) ||
       (github.event_name == 'issues' &&
-      contains(github.event.issue.labels.*.name, 'commandcode')) ||
+      (contains(github.event.issue.labels.*.name, 'commandcode') ||
+      (github.event.action == 'assigned' && endsWith(github.event.assignee.login, '[bot]')))) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45

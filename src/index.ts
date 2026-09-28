@@ -51,7 +51,7 @@ function parseMentions(value: string): string[] {
     .split(",")
     .map((mention) => mention.trim())
     .filter((mention) => mention.length > 0);
-  return mentions.length > 0 ? mentions : ["/cmd", "/commandcode"];
+  return mentions.length > 0 ? mentions : ["/cmd", "/commandcode", "@commandcode-agent"];
 }
 
 function formatDuration(ms: number): string {

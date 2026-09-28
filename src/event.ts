@@ -145,7 +145,11 @@ export function parseTrigger(eventName: string, payload: unknown, mentions: stri
 
   if (eventName === "issues") {
     const action = asString(root["action"]);
-    if (action !== "opened" && action !== "labeled") return null;
+    if (action !== "opened" && action !== "labeled" && action !== "assigned") return null;
+    if (action === "assigned") {
+      const assignee = asString(asRecord(root["assignee"])?.["login"]);
+      if (assignee === undefined || !assignee.endsWith("[bot]")) return null;
+    }
 
     const issue = asRecord(root["issue"]);
     const number = asNumber(issue?.["number"]);
