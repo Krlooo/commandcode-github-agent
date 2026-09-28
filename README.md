@@ -21,6 +21,8 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
 8. Pull request: for issues it opens a PR; for pull requests it updates the branch. The body has the task, the change summary, the verification result and the review.
 9. Report comment: a final comment links the branch, the PR, the model, the agent sessions, the duration and the workflow run.
 
+If the mention asks a question or requests an explanation rather than a change, the agent replies in the thread and opens no pull request; the recent comments are part of its context, so you can keep the conversation going by mentioning it again.
+
 ## Quick start
 
 1. Copy [`.github/workflows/commandcode.yml`](.github/workflows/commandcode.yml) into your repository, or adapt its `on:`/`uses:` block to point at this action.

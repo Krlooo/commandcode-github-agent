@@ -112,11 +112,17 @@ export function buildImplementerPrompt(ctx: TaskContext): string {
   }
   lines.push("");
   lines.push("## Rules");
+  lines.push(
+    "- Decide the mode from the task: if it asks for information, an explanation, an opinion or a discussion, do not change any file; research the repository as needed and answer in your final summary using markdown.",
+  );
+  lines.push(
+    "- If the task asks to create, fix, change, add or remove something, implement it in the working tree as usual.",
+  );
   lines.push(`- You are already inside a git checkout of the branch ${ctx.branch}; do not create branches.`);
   lines.push("- Make the changes directly in the working tree; do not push.");
   lines.push("- The harness commits, pushes and opens the PR for you, so do not open pull requests.");
   lines.push("- run the project's checks when available (the test, lint and build commands).");
-  lines.push("- Finish with a concise summary of the changes you made.");
+  lines.push("- Finish with a concise summary of what you did, or with your answer when the task was a question.");
   return lines.join("\n");
 }
 
