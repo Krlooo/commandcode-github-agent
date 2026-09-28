@@ -55,6 +55,38 @@ function tail(text, max) {
   if (trimmed.length <= max) return trimmed;
   return trimmed.slice(trimmed.length - max);
 }
+var AGENT_ENV_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TERM",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "SHELL",
+  "CI",
+  "USERPROFILE",
+  "SystemRoot",
+  "SystemDrive",
+  "WINDIR",
+  "ComSpec",
+  "PATHEXT",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROCESSOR_ARCHITECTURE",
+  "NUMBER_OF_PROCESSORS"
+];
+function agentEnv(source, overrides) {
+  const env2 = {};
+  for (const key of AGENT_ENV_ALLOWLIST) {
+    const value = source[key];
+    if (typeof value === "string") env2[key] = value;
+  }
+  for (const [key, value] of Object.entries(overrides)) env2[key] = value;
+  return env2;
+}
 function spawnAgent(binary, args, options) {
   return new Promise((resolve) => {
     const child = spawn(binary, args, {
@@ -105,7 +137,7 @@ async function runAgent(options) {
     String(options.maxTurns)
   ];
   if (options.model) args.push("-m", options.model);
-  const env2 = { ...process.env, ...options.env ?? {} };
+  const env2 = agentEnv(process.env, options.env ?? {});
   const { stdout, stderr, exitCode } = await spawnAgent(binary, args, {
     cwd: options.workspace,
     env: env2,
@@ -637,6 +669,9 @@ var GitHubClient = class {
 
 // src/scrub.ts
 var ACCESS_TOKEN_URL = /x-access-token:[^@\s]+@/g;
+function collectSecrets(values) {
+  return values.filter((value) => typeof value === "string" && value.length > 0);
+}
 function scrubSecrets(text, secrets) {
   let scrubbed = text.replace(ACCESS_TOKEN_URL, "x-access-token:***@");
   for (const secret of secrets) {
@@ -767,7 +802,14 @@ async function main() {
   const eventPath = env("GITHUB_EVENT_PATH");
   const token = env("GITHUB_TOKEN");
   const workspace = env("GITHUB_WORKSPACE", process.cwd());
-  const secrets = token ? [token, basicAuthHeader(token)] : [];
+  const secrets = collectSecrets([
+    token,
+    token ? basicAuthHeader(token) : void 0,
+    env("INPUT_COMMAND_CODE_API_KEY"),
+    env("COMMAND_CODE_API_KEY"),
+    env("INPUT_PROVIDER_API_KEY"),
+    env("CMD_AGENT_PROVIDER_KEY")
+  ]);
   const logError = (message, error) => {
     const detail = error === void 0 ? "" : ` ${errorMessage(error)}`;
     console.error(scrubSecrets(`${message}${detail}`, secrets));
@@ -879,9 +921,12 @@ async function main() {
       branch = pull.head.ref;
       try {
         await configureAuth(workspace, token);
-        await fetchBranch(workspace, branch);
-        await checkoutBranch(workspace, branch);
-        await unsetAuth(workspace);
+        try {
+          await fetchBranch(workspace, branch);
+          await checkoutBranch(workspace, branch);
+        } finally {
+          await unsetAuth(workspace);
+        }
       } catch (error) {
         await comment(`Could not check out the pull request branch \`${branch}\`: ${errorMessage(error)}`);
         await react("-1");
@@ -996,8 +1041,11 @@ ${truncate(
     )}`;
     await commit(workspace, commitMessage);
     await configureAuth(workspace, token);
-    await push(workspace, branch);
-    await unsetAuth(workspace);
+    try {
+      await push(workspace, branch);
+    } finally {
+      await unsetAuth(workspace);
+    }
     let prUrl = null;
     if (!trigger.isPullRequest) {
       const prTitle = trigger.number !== void 0 ? `${trigger.title || firstLine(trigger.prompt)} (#${trigger.number})` : firstLine(trigger.prompt);
@@ -1049,7 +1097,15 @@ main().then((code) => {
 }).catch((error) => {
   console.error(
     "Unhandled error in commandcode-github-agent:",
-    scrubSecrets(errorMessage(error), [])
+    scrubSecrets(
+      errorMessage(error),
+      collectSecrets([
+        env("GITHUB_TOKEN"),
+        env("COMMAND_CODE_API_KEY"),
+        env("INPUT_PROVIDER_API_KEY"),
+        env("CMD_AGENT_PROVIDER_KEY")
+      ])
+    )
   );
   process.exitCode = 1;
 });
