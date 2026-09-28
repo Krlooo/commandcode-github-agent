@@ -40,6 +40,9 @@ inputs:
   github-token:
     description: "Token used for the GitHub API and git push; defaults to the workflow token"
     required: false
+  agent-token:
+    description: "Optional read-only GitHub token exposed to the agent as GH_TOKEN so it can read issues and pull requests with the gh CLI. Generate it with actions/create-github-app-token restricted to read permissions."
+    required: false
 
 runs:
   using: "composite"
@@ -65,4 +68,5 @@ runs:
         INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
         INPUT_PROVIDER_API_KEY: ${{ inputs.provider-api-key }}
+        INPUT_AGENT_TOKEN: ${{ inputs.agent-token }}
         GITHUB_TOKEN: "${{ inputs.github-token != '' && inputs.github-token || github.token }}"

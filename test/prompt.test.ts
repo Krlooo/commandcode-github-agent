@@ -58,6 +58,20 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).toMatch(/answer in your final summary/i);
   });
 
+  it("advertises read-only issue/PR access only when a read token is available", () => {
+    const withToken = buildImplementerPrompt(context({ ghReadAccess: true }));
+    const without = buildImplementerPrompt(context());
+    expect(withToken).toContain("gh issue view");
+    expect(without).not.toContain("gh issue view");
+  });
+
+  it("asks for plain, human-sounding prose", () => {
+    const impl = buildImplementerPrompt(context());
+    const rev = buildReviewerPrompt(context(), { diffStat: "", verifyOutput: null });
+    expect(impl).toContain("no em dashes");
+    expect(rev).toContain("no em dashes");
+  });
+
   it("caps the number of context comments", () => {
     const many = Array.from({ length: MAX_CONTEXT_COMMENTS + 10 }, (_, i) => ({
       author: `user${i}`,

@@ -27,6 +27,8 @@ export interface TaskContext {
   task: string;
   /** Local paths of images downloaded from the trigger comment. */
   attachments?: string[];
+  /** True when a read-only GitHub token is available to the agent (gh CLI). */
+  ghReadAccess?: boolean;
 }
 
 export const MAX_CONTEXT_COMMENTS = 30;
@@ -122,6 +124,14 @@ export function buildImplementerPrompt(ctx: TaskContext): string {
   lines.push("- Make the changes directly in the working tree; do not push.");
   lines.push("- The harness commits, pushes and opens the PR for you, so do not open pull requests.");
   lines.push("- run the project's checks when available (the test, lint and build commands).");
+  if (ctx.ghReadAccess) {
+    lines.push(
+      "- This repository's issues and pull requests are readable with the gh CLI (GH_TOKEN is set): gh issue view <n>, gh pr view <n>, gh issue list. Use it when the task references them.",
+    );
+  }
+  lines.push(
+    '- Write for people: plain sentences, no em dashes, no bold labels on every bullet, no marketing tone, no "not X but Y" constructions.',
+  );
   lines.push("- Finish with a concise summary of what you did, or with your answer when the task was a question.");
   return lines.join("\n");
 }
@@ -168,5 +178,8 @@ export function buildReviewerPrompt(ctx: TaskContext, evidence: ReviewerEvidence
   lines.push("- Do not push, do not create branches, do not open pull requests.");
   lines.push("- Run the checks again after fixing.");
   lines.push("- End with a concise review summary: what is correct, what you fixed, and any remaining risk.");
+  lines.push(
+    "- Write for people: plain sentences, no em dashes, no bold labels on every bullet, no marketing tone.",
+  );
   return lines.join("\n");
 }

@@ -54,6 +54,7 @@ permissions:
 | `provider-base-url` | none | Base URL for the BYOK provider (e.g. `https://openrouter.ai/api/v1`). |
 | `provider-api-key` | none | API key for the BYOK provider; provide it through a secret. |
 | `github-token` | `${{ github.token }}` | Token used for the GitHub API and git push; defaults to the workflow token. |
+| `agent-token` | none | Optional read-only token exposed to the agent as `GH_TOKEN` so it can read other issues and pull requests with the `gh` CLI. Generate it with `actions/create-github-app-token` restricted to read permissions. |
 
 ## Usage
 
@@ -115,7 +116,7 @@ When `provider-api-key` is set, the action writes `~/.commandcode/providers.json
 - Collaborators-only gate: only actors with `write` or `admin` on the repository can trigger a run. The permission is looked up through the GitHub API.
 - Bot loop guard: events whose actor ends in `[bot]` are ignored, so the agent cannot trigger itself in a loop.
 - Prompt-injection sanitization: issue and PR text is stripped of HTML comments, zero-width and bidi control characters before it reaches a prompt, and the remaining context is marked as information only.
-- Scoped token: the action uses the `github-token` you pass, which defaults to the workflow token limited to the job's `permissions`. With the optional GitHub App setup (`app/`, `actions/create-github-app-token`), the agent acts as a bot with a short-lived installation token.
+- Scoped token: the action uses the `github-token` you pass, which defaults to the workflow token limited to the job's `permissions`. With the optional GitHub App setup (`app/`, `actions/create-github-app-token`), the agent acts as a bot with a short-lived installation token. The write token never enters the agent's environment; if you pass `agent-token`, that separate token is read-only.
 - Token pushes: commits pushed with the plain `GITHUB_TOKEN` do not trigger other workflows, which is a GitHub platform behavior. Using the app token lifts that; the dogfood workflow in this repository does it.
 
 ## Limitations / roadmap
