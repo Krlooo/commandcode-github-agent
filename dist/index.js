@@ -1,12 +1,10 @@
 // src/index.ts
-import { execFile as execFile3 } from "node:child_process";
+import { execFile as execFile2 } from "node:child_process";
 import { readFileSync as readFileSync2 } from "node:fs";
-import { promisify as promisify3 } from "node:util";
+import { promisify as promisify2 } from "node:util";
 
 // src/agent.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-var execFileAsync = promisify(execFile);
+import { spawn } from "node:child_process";
 var MAX_BUFFER = 64 * 1024 * 1024;
 var STDERR_TAIL_LENGTH = 2e3;
 function isRecord(value) {
@@ -57,11 +55,47 @@ function tail(text, max) {
   if (trimmed.length <= max) return trimmed;
   return trimmed.slice(trimmed.length - max);
 }
+function spawnAgent(binary, args, options) {
+  return new Promise((resolve) => {
+    const child = spawn(binary, args, {
+      cwd: options.cwd,
+      env: options.env,
+      shell: process.platform === "win32",
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (exitCode) => {
+      if (settled) return;
+      settled = true;
+      resolve({ stdout, stderr, exitCode });
+    };
+    child.stdout?.on("data", (chunk) => {
+      if (stdout.length < MAX_BUFFER) stdout += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < MAX_BUFFER) stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      stderr += `
+${error.message}`;
+      finish(1);
+    });
+    child.on("close", (code) => {
+      finish(typeof code === "number" ? code : 1);
+    });
+    child.stdin?.on("error", () => {
+    });
+    child.stdin?.end(`${options.prompt}
+`);
+  });
+}
 async function runAgent(options) {
   const binary = process.platform === "win32" ? "cmdc.cmd" : "cmdc";
   const args = [
     "-p",
-    options.prompt,
     "--yolo",
     "--skip-onboarding",
     "--no-auto-update",
@@ -72,26 +106,11 @@ async function runAgent(options) {
   ];
   if (options.model) args.push("-m", options.model);
   const env2 = { ...process.env, ...options.env ?? {} };
-  let stdout = "";
-  let stderr = "";
-  let exitCode = 0;
-  try {
-    const { stdout: out, stderr: err } = await execFileAsync(binary, args, {
-      cwd: options.workspace,
-      maxBuffer: MAX_BUFFER,
-      env: env2,
-      shell: process.platform === "win32",
-      windowsHide: true
-    });
-    stdout = out;
-    stderr = err;
-  } catch (error) {
-    const failure = error;
-    stdout = typeof failure.stdout === "string" ? failure.stdout : "";
-    stderr = typeof failure.stderr === "string" ? failure.stderr : "";
-    if (!stderr && typeof failure.message === "string") stderr = failure.message;
-    exitCode = typeof failure.code === "number" ? failure.code : 1;
-  }
+  const { stdout, stderr, exitCode } = await spawnAgent(binary, args, {
+    cwd: options.workspace,
+    env: env2,
+    prompt: options.prompt
+  });
   const parsed = parseAgentStdout(stdout);
   if (parsed) return { result: parsed, exitCode };
   const stderrTail = tail(stderr, STDERR_TAIL_LENGTH);
@@ -290,12 +309,12 @@ ${body}`,
 }
 
 // src/git.ts
-import { execFile as execFile2 } from "node:child_process";
-import { promisify as promisify2 } from "node:util";
-var execFileAsync2 = promisify2(execFile2);
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+var execFileAsync = promisify(execFile);
 var MAX_BUFFER2 = 64 * 1024 * 1024;
 async function git(cwd, args) {
-  const { stdout } = await execFileAsync2("git", args, { cwd, maxBuffer: MAX_BUFFER2 });
+  const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: MAX_BUFFER2 });
   return stdout;
 }
 async function configureUser(cwd, name, email) {
@@ -581,7 +600,7 @@ var GitHubClient = class {
 };
 
 // src/index.ts
-var execFileAsync3 = promisify3(execFile3);
+var execFileAsync2 = promisify2(execFile2);
 var MAX_COMMENT_LENGTH = 6e4;
 var MAX_VERIFY_OUTPUT = 2e4;
 var MAX_PR_VERIFY_OUTPUT = 4e3;
@@ -628,7 +647,7 @@ function shellInvocation(command) {
 async function runCommand(cwd, command) {
   const { file, args } = shellInvocation(command);
   try {
-    const { stdout, stderr } = await execFileAsync3(file, args, { cwd, maxBuffer: MAX_SHELL_BUFFER });
+    const { stdout, stderr } = await execFileAsync2(file, args, { cwd, maxBuffer: MAX_SHELL_BUFFER });
     return { output: [stdout, stderr].filter((part) => part.length > 0).join("\n"), exitCode: 0 };
   } catch (error) {
     const failure = error;

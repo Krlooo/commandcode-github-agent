@@ -1,12 +1,13 @@
 /**
  * Command Code (`cmdc`) headless runner: NDJSON result parsing and process
  * spawning. No runtime dependencies: only node builtins.
+ *
+ * The prompt is piped through stdin (documented headless input method) instead
+ * of argv: shell quoting of multi-word prompts is not portable, and stdin has
+ * no argument-length limits.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { spawn } from "node:child_process";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 const STDERR_TAIL_LENGTH = 2000;
@@ -105,23 +106,66 @@ function tail(text: string, max: number): string {
   return trimmed.slice(trimmed.length - max);
 }
 
-interface ExecFailure {
-  stdout?: unknown;
-  stderr?: unknown;
-  code?: unknown;
-  message?: unknown;
+interface SpawnOutcome {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+function spawnAgent(
+  binary: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv; prompt: string },
+): Promise<SpawnOutcome> {
+  return new Promise((resolve) => {
+    const child = spawn(binary, args, {
+      cwd: options.cwd,
+      env: options.env,
+      shell: process.platform === "win32",
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (exitCode: number): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ stdout, stderr, exitCode });
+    };
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdout.length < MAX_BUFFER) stdout += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderr.length < MAX_BUFFER) stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error: Error) => {
+      stderr += `\n${error.message}`;
+      finish(1);
+    });
+    child.on("close", (code: number | null) => {
+      finish(typeof code === "number" ? code : 1);
+    });
+
+    // Ignore EPIPE when the CLI closes stdin early (e.g. argument errors).
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(`${options.prompt}\n`);
+  });
 }
 
 /**
- * Runs the Command Code CLI headlessly against a workspace.
- * Never throws on a non-zero exit: the exit code is returned instead.
+ * Runs the Command Code CLI headlessly against a workspace, with the prompt
+ * piped through stdin. Never throws on a non-zero exit: the exit code is
+ * returned instead.
  */
 export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcome> {
   const binary = process.platform === "win32" ? "cmdc.cmd" : "cmdc";
 
   const args = [
     "-p",
-    options.prompt,
     "--yolo",
     "--skip-onboarding",
     "--no-auto-update",
@@ -134,27 +178,11 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcom
 
   const env: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}) };
 
-  let stdout = "";
-  let stderr = "";
-  let exitCode = 0;
-
-  try {
-    const { stdout: out, stderr: err } = await execFileAsync(binary, args, {
-      cwd: options.workspace,
-      maxBuffer: MAX_BUFFER,
-      env,
-      shell: process.platform === "win32",
-      windowsHide: true,
-    });
-    stdout = out;
-    stderr = err;
-  } catch (error) {
-    const failure = error as ExecFailure;
-    stdout = typeof failure.stdout === "string" ? failure.stdout : "";
-    stderr = typeof failure.stderr === "string" ? failure.stderr : "";
-    if (!stderr && typeof failure.message === "string") stderr = failure.message;
-    exitCode = typeof failure.code === "number" ? failure.code : 1;
-  }
+  const { stdout, stderr, exitCode } = await spawnAgent(binary, args, {
+    cwd: options.workspace,
+    env,
+    prompt: options.prompt,
+  });
 
   const parsed = parseAgentStdout(stdout);
   if (parsed) return { result: parsed, exitCode };
