@@ -135,6 +135,14 @@ export class GitHubClient {
     return `/repos/${this.owner}/${this.repo}${suffix}`;
   }
 
+  /**
+   * Route prefix for a comment's reactions: review comments live under
+   * `/pulls/comments/{id}`, plain comments under `/issues/comments/{id}`.
+   */
+  private commentPath(commentId: number, kind: "issue" | "review"): string {
+    return kind === "review" ? `/pulls/comments/${commentId}` : `/issues/comments/${commentId}`;
+  }
+
   async getRepo(): Promise<RepoInfo> {
     const data = asRecord(await this.request("GET", this.issuePath()));
     return { default_branch: asString(data?.["default_branch"]) ?? "main" };
@@ -197,15 +205,28 @@ export class GitHubClient {
     return "none";
   }
 
-  async addReaction(commentId: number, content: string): Promise<{ id: number }> {
+  async addReaction(
+    commentId: number,
+    content: string,
+    kind: "issue" | "review" = "issue",
+  ): Promise<{ id: number }> {
     const data = asRecord(
-      await this.request("POST", this.issuePath(`/issues/comments/${commentId}/reactions`), { content }),
+      await this.request("POST", this.issuePath(`${this.commentPath(commentId, kind)}/reactions`), {
+        content,
+      }),
     );
     return { id: asNumber(data?.["id"]) ?? 0 };
   }
 
-  async deleteReaction(commentId: number, reactionId: number): Promise<void> {
-    await this.request("DELETE", this.issuePath(`/issues/comments/${commentId}/reactions/${reactionId}`));
+  async deleteReaction(
+    commentId: number,
+    reactionId: number,
+    kind: "issue" | "review" = "issue",
+  ): Promise<void> {
+    await this.request(
+      "DELETE",
+      this.issuePath(`${this.commentPath(commentId, kind)}/reactions/${reactionId}`),
+    );
   }
 
   async postComment(number: number, body: string): Promise<{ id: number; html_url: string }> {

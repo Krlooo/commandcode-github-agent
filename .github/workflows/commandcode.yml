@@ -3,8 +3,10 @@ name: commandcode
 on:
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
   issues:
-    types: [opened, labeled, assigned]
+    types: [assigned]
   workflow_dispatch:
     inputs:
       prompt:
@@ -21,25 +23,23 @@ concurrency:
 
 jobs:
   commandcode:
-    # Admit: a non-bot comment carrying /cmd, /commandcode or @commandcode-agent,
-    # an issue with the "commandcode" label, an issue assigned to a bot, or a
-    # manual run. This is a coarse gate; the handler's parser applies the
-    # precise rules.
+    # Admit: a non-bot comment mentioning @commandcode-agent, an issue assigned
+    # to a bot, or a manual run. This is a coarse gate; the handler's parser
+    # applies the precise word-boundary rules.
     if: >-
-      (github.event_name == 'issue_comment' &&
+      ((github.event_name == 'issue_comment' ||
+      github.event_name == 'pull_request_review_comment') &&
       github.event.comment.user.type != 'Bot' &&
-      (contains(github.event.comment.body, '/cmd') ||
-      contains(github.event.comment.body, '/commandcode') ||
-      contains(github.event.comment.body, '@commandcode-agent'))) ||
+      contains(github.event.comment.body, '@commandcode-agent')) ||
       (github.event_name == 'issues' &&
-      (contains(github.event.issue.labels.*.name, 'commandcode') ||
-      (github.event.action == 'assigned' && endsWith(github.event.assignee.login, '[bot]')))) ||
+      github.event.action == 'assigned' &&
+      endsWith(github.event.assignee.login, '[bot]')) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           # The handler configures its own auth header (the app token) for
@@ -51,7 +51,7 @@ jobs:
       # unlike GITHUB_TOKEN - PRs opened with it DO trigger other workflows (CI).
       - name: Create the app token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
         with:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}

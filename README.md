@@ -1,6 +1,6 @@
 # Command Code GitHub Agent
 
-Mention `/cmd` (or `/commandcode`, or `@commandcode-agent`) in an issue or pull request comment and the agent works on it inside your own repository's GitHub Actions. It implements the change, verifies it, reviews its own work and opens a pull request. The code stays on your runners: the action wraps the [Command Code](https://commandcode.ai/docs) CLI in a composite action.
+Mention `@commandcode-agent` in an issue, pull request or review comment and the agent works on it inside your own repository's GitHub Actions. It implements the change, verifies it, reviews its own work and opens a pull request. The code stays on your runners: the action wraps the [Command Code](https://commandcode.ai/docs) CLI in a composite action.
 
 ## How it works
 
@@ -11,7 +11,7 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
    ->  reviewer agent  ->  commit / push  ->  pull request  ->  report comment
 ```
 
-1. Trigger: a `/cmd`, `/commandcode` or `@commandcode-agent` comment, an issue opened with (or labeled) `commandcode`, an issue assigned to the app, or a manual `workflow_dispatch`. The triggering comment gets a 👀 reaction while the run is in progress, replaced with 🚀 on success or 👎 on failure.
+1. Trigger: an `@commandcode-agent` comment (on an issue, a pull request or a pull request review), an issue assigned to the app, or a manual `workflow_dispatch`. Images pasted into the triggering comment are downloaded and handed to the agent. The triggering comment gets a 👀 reaction while the run is in progress, replaced with 🚀 on success or 👎 on failure.
 2. Permission gate: the actor must have `write` or `admin` access to the repository. Anyone else gets an explanatory comment and the run stops. Events authored by a bot are ignored.
 3. Branch: for an issue the agent creates `commandcode/issue-<n>-<timestamp>` from the default branch. For a pull request it checks out the PR head branch and pushes back to it.
 4. Implementer agent: `cmdc` runs headless (`-p ... --yolo --output-format json --max-turns ...`) with the task, the sanitized issue/PR context and a set of rules. It edits the working tree.
@@ -25,7 +25,7 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
 
 1. Copy [`.github/workflows/commandcode.yml`](.github/workflows/commandcode.yml) into your repository, or adapt its `on:`/`uses:` block to point at this action.
 2. Create a Command Code API key (https://commandcode.ai/settings/keys), store it as a secret (e.g. `AGENT_API_KEY`) and pass it as `command-code-api-key` in the `with:` block, together with a `model` id from your plan. BYOK is the alternative, see [Auth](#auth).
-3. Comment `/cmd fix the flaky login test`, mention `@commandcode-agent`, add the `commandcode` label, or assign the issue to the app.
+3. Comment `@commandcode-agent fix the flaky login test`, or assign the issue to the app.
 
 The action sets up Node.js 22 itself before installing the CLI, so you do not need a Node step of your own.
 
@@ -42,7 +42,7 @@ permissions:
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `mentions` | `/cmd,/commandcode,@commandcode-agent` | Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent. |
+| `mentions` | `@commandcode-agent` | Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent. |
 | `model` | none | Model identifier passed to the Command Code CLI (`-m`). Required when `provider-api-key` is set. |
 | `max-turns` | `100` | Maximum number of agent turns per agent run (implementer and reviewer). |
 | `verify-command` | none | Command run after the implementer agent to verify the change (e.g. `npm ci && npm test`). |
@@ -60,6 +60,10 @@ name: commandcode
 on:
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [assigned]
 
 permissions:
   contents: write
@@ -114,9 +118,9 @@ When `provider-api-key` is set, the action writes `~/.commandcode/providers.json
 
 ## Limitations / roadmap
 
-- Fork pull requests are not supported yet. The agent refuses to run on a PR whose head repository is a fork.
+- Fork pull requests are supported for the checkout and the push when the contributor has "Allow edits by maintainers" enabled and the token can reach the fork; otherwise the run reports the push failure in a comment.
 - There is no live progress comment during a run. You get the reaction while it works and the final report when it finishes.
-- The GitHub App in `app/` provides the bot identity with short-lived, revocable tokens and enables workflow chaining. Fork-PR support is still pending.
+- The GitHub App in `app/` provides the bot identity with short-lived, revocable tokens and enables workflow chaining.
 
 ## Links
 

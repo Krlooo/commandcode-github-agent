@@ -26,6 +26,20 @@ function issueCommentPayload(commentBody: string, isPullRequest = false) {
   };
 }
 
+function reviewCommentPayload(commentBody: string) {
+  return {
+    action: "created",
+    pull_request: {
+      number: 12,
+      title: "Fix the flaky test",
+      body: "The auth test fails on Windows.",
+    },
+    comment: { id: 99, body: commentBody, user: { login: "carlos" } },
+    repository: repo,
+    sender: { login: "carlos" },
+  };
+}
+
 describe("extractPrompt", () => {
   const mentions = ["/cmd", "/commandcode"];
 
@@ -80,6 +94,7 @@ describe("parseTrigger", () => {
       commentId: 99,
       title: "Fix the flaky test",
       body: "The auth test fails on Windows.",
+      commentBody: "/cmd fix it",
     });
   });
 
@@ -105,6 +120,48 @@ describe("parseTrigger", () => {
   it("ignores non-created issue_comment actions", () => {
     const payload = { ...issueCommentPayload("/cmd fix it"), action: "edited" };
     expect(parseTrigger("issue_comment", payload, mentions)).toBeNull();
+  });
+
+  it("parses a pull_request_review_comment with a mention", () => {
+    const trigger = parseTrigger(
+      "pull_request_review_comment",
+      reviewCommentPayload("/cmd fix it"),
+      mentions,
+    );
+    expect(trigger).toEqual({
+      kind: "pull_request_review_comment",
+      owner: "carlos",
+      repo: "commandcode-github-agent",
+      number: 12,
+      isPullRequest: true,
+      actor: "carlos",
+      prompt: "fix it",
+      commentId: 99,
+      title: "Fix the flaky test",
+      body: "The auth test fails on Windows.",
+      commentBody: "/cmd fix it",
+    });
+  });
+
+  it("uses the pull_request title and body when the review comment has no task text", () => {
+    const trigger = parseTrigger(
+      "pull_request_review_comment",
+      reviewCommentPayload("/cmd"),
+      mentions,
+    );
+    expect(trigger?.prompt).toContain("Fix the flaky test");
+    expect(trigger?.prompt).toContain("The auth test fails on Windows.");
+  });
+
+  it("returns null for a review comment without a mention", () => {
+    expect(
+      parseTrigger("pull_request_review_comment", reviewCommentPayload("thanks!"), mentions),
+    ).toBeNull();
+  });
+
+  it("ignores non-created pull_request_review_comment actions", () => {
+    const payload = { ...reviewCommentPayload("/cmd fix it"), action: "edited" };
+    expect(parseTrigger("pull_request_review_comment", payload, mentions)).toBeNull();
   });
 
   it("parses an opened issue into a task from title + body", () => {

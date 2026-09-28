@@ -4,7 +4,11 @@
  * Pure functions: turn a raw GitHub webhook payload into a {@link Trigger}.
  */
 
-export type TriggerKind = "issue_comment" | "issues" | "workflow_dispatch";
+export type TriggerKind =
+  | "issue_comment"
+  | "pull_request_review_comment"
+  | "issues"
+  | "workflow_dispatch";
 
 export interface Trigger {
   kind: TriggerKind;
@@ -17,6 +21,8 @@ export interface Trigger {
   commentId?: number;
   title: string;
   body: string;
+  /** The raw trigger comment body, for scanning attachments (comment triggers only). */
+  commentBody?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -95,6 +101,54 @@ function looksLikePullRequest(issue: Record<string, unknown> | undefined): boole
   return asRecord(issue?.["pull_request"]) !== undefined;
 }
 
+interface CommentTarget {
+  number: number;
+  title: string;
+  body: string;
+  isPullRequest: boolean;
+}
+
+/**
+ * Shared parsing for the comment triggers (`issue_comment` and
+ * `pull_request_review_comment`): a created comment carrying a mention, with the
+ * task falling back to the target's title + body when the comment has no text.
+ */
+function parseCommentTrigger(
+  kind: "issue_comment" | "pull_request_review_comment",
+  root: Record<string, unknown>,
+  identity: { owner: string; repo: string },
+  mentions: string[],
+  target: CommentTarget,
+): Trigger | null {
+  const comment = asRecord(root["comment"]);
+  if (!comment) return null;
+
+  const commentBody = asString(comment["body"]) ?? "";
+  const extracted = extractPrompt(commentBody, mentions);
+  if (extracted === null) return null;
+
+  const actor =
+    asString(asRecord(comment["user"])?.["login"]) ?? asString(asRecord(root["sender"])?.["login"]) ?? "";
+  const prompt = extracted.length > 0 ? extracted : `${target.title}\n\n${target.body}`;
+
+  const trigger: Trigger = {
+    kind,
+    owner: identity.owner,
+    repo: identity.repo,
+    number: target.number,
+    isPullRequest: target.isPullRequest,
+    actor,
+    prompt,
+    title: target.title,
+    body: target.body,
+    commentBody,
+  };
+
+  const commentId = asNumber(comment["id"]);
+  if (commentId !== undefined) trigger.commentId = commentId;
+  return trigger;
+}
+
 /**
  * Parses a webhook `eventName` + `payload` into a {@link Trigger}.
  * Returns `null` for any unsupported event/action.
@@ -110,37 +164,31 @@ export function parseTrigger(eventName: string, payload: unknown, mentions: stri
   if (eventName === "issue_comment") {
     if (asString(root["action"]) !== "created") return null;
 
-    const comment = asRecord(root["comment"]);
-    if (!comment) return null;
-
-    const extracted = extractPrompt(asString(comment["body"]) ?? "", mentions);
-    if (extracted === null) return null;
-
     const issue = asRecord(root["issue"]);
     const number = asNumber(issue?.["number"]);
     if (!issue || number === undefined) return null;
 
-    const title = asString(issue["title"]) ?? "";
-    const body = asString(issue["body"]) ?? "";
-    const actor =
-      asString(asRecord(comment["user"])?.["login"]) ?? asString(asRecord(root["sender"])?.["login"]) ?? "";
-    const prompt = extracted.length > 0 ? extracted : `${title}\n\n${body}`;
-
-    const trigger: Trigger = {
-      kind: "issue_comment",
-      owner,
-      repo,
+    return parseCommentTrigger("issue_comment", root, identity, mentions, {
       number,
+      title: asString(issue["title"]) ?? "",
+      body: asString(issue["body"]) ?? "",
       isPullRequest: looksLikePullRequest(issue),
-      actor,
-      prompt,
-      title,
-      body,
-    };
+    });
+  }
 
-    const commentId = asNumber(comment["id"]);
-    if (commentId !== undefined) trigger.commentId = commentId;
-    return trigger;
+  if (eventName === "pull_request_review_comment") {
+    if (asString(root["action"]) !== "created") return null;
+
+    const pull = asRecord(root["pull_request"]);
+    const number = asNumber(pull?.["number"]);
+    if (!pull || number === undefined) return null;
+
+    return parseCommentTrigger("pull_request_review_comment", root, identity, mentions, {
+      number,
+      title: asString(pull["title"]) ?? "",
+      body: asString(pull["body"]) ?? "",
+      isPullRequest: true,
+    });
   }
 
   if (eventName === "issues") {

@@ -25,6 +25,8 @@ export interface TaskContext {
   comments: TaskComment[];
   branch: string;
   task: string;
+  /** Local paths of images downloaded from the trigger comment. */
+  attachments?: string[];
 }
 
 export const MAX_CONTEXT_COMMENTS = 30;
@@ -73,6 +75,21 @@ function subject(ctx: TaskContext): string {
   return ctx.isPullRequest ? "pull request" : "issue";
 }
 
+/**
+ * Lines listing the images downloaded from the trigger comment. These are
+ * machine paths, not untrusted user text, so they stay outside the sanitized
+ * context block.
+ */
+function attachmentLines(ctx: TaskContext): string[] {
+  const attachments = ctx.attachments ?? [];
+  if (attachments.length === 0) return [];
+  const lines = [
+    "Attached images from the trigger comment (read them with your file tools before starting):",
+  ];
+  for (const path of attachments) lines.push(`- ${path}`);
+  return lines;
+}
+
 export function buildImplementerPrompt(ctx: TaskContext): string {
   const lines: string[] = [];
   lines.push(
@@ -88,6 +105,11 @@ export function buildImplementerPrompt(ctx: TaskContext): string {
   lines.push("");
   lines.push("## Context");
   lines.push(...contextLines(ctx));
+  const attachments = attachmentLines(ctx);
+  if (attachments.length > 0) {
+    lines.push("");
+    lines.push(...attachments);
+  }
   lines.push("");
   lines.push("## Rules");
   lines.push(`- You are already inside a git checkout of the branch ${ctx.branch}; do not create branches.`);
@@ -117,6 +139,11 @@ export function buildReviewerPrompt(ctx: TaskContext, evidence: ReviewerEvidence
   lines.push("");
   lines.push("## Context");
   lines.push(...contextLines(ctx));
+  const attachments = attachmentLines(ctx);
+  if (attachments.length > 0) {
+    lines.push("");
+    lines.push(...attachments);
+  }
   lines.push("");
   lines.push("## Diff produced by the implementer");
   lines.push(evidence.diffStat.trim().length > 0 ? evidence.diffStat : "(no diff stat available)");

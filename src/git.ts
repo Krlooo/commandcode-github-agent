@@ -30,6 +30,16 @@ export async function fetchBranch(cwd: string, ref: string): Promise<void> {
   await git(cwd, ["fetch", "origin", ref]);
 }
 
+/** Fetches `ref` from an explicit remote URL (e.g. a fork's HTTPS remote). */
+export async function fetchUrl(cwd: string, url: string, ref: string): Promise<void> {
+  await git(cwd, ["fetch", url, ref]);
+}
+
+/** Checks out `FETCH_HEAD` into `branch`, resetting it if it already exists. */
+export async function checkoutFetchHead(cwd: string, branch: string): Promise<void> {
+  await git(cwd, ["checkout", "-B", branch, "FETCH_HEAD"]);
+}
+
 export async function addAll(cwd: string): Promise<void> {
   await git(cwd, ["add", "-A"]);
 }
@@ -70,9 +80,9 @@ export async function unsetAuth(cwd: string): Promise<void> {
   }
 }
 
-/** Pushes the current HEAD to `origin` as `branch` (auth via `configureAuth`). */
-export async function push(cwd: string, branch: string): Promise<void> {
-  await git(cwd, ["push", "origin", `HEAD:refs/heads/${branch}`]);
+/** Pushes the current HEAD to `url` (defaults to `origin`) as `branch` (auth via `configureAuth`). */
+export async function push(cwd: string, url: string | undefined, branch: string): Promise<void> {
+  await git(cwd, ["push", url ?? "origin", `HEAD:refs/heads/${branch}`]);
 }
 
 export async function statusPorcelain(cwd: string): Promise<string[]> {

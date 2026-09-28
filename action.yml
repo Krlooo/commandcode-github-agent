@@ -1,5 +1,5 @@
 name: "Command Code Agent"
-description: "Run Command Code headless from a /cmd comment: implementer + verification + reviewer pipeline that opens a pull request"
+description: "Run Command Code headless from an @commandcode-agent mention or an issue assignment: implementer + verification + reviewer pipeline that opens a pull request"
 author: "Carlos Muñoz"
 
 branding:
@@ -8,9 +8,9 @@ branding:
 
 inputs:
   mentions:
-    description: "Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent (e.g. /cmd, /commandcode, @commandcode-agent)."
+    description: "Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent (default: @commandcode-agent)."
     required: false
-    default: "/cmd,/commandcode,@commandcode-agent"
+    default: "@commandcode-agent"
   model:
     description: "Model identifier passed to the Command Code CLI (-m). Required when provider-api-key is set."
     required: false
@@ -45,7 +45,7 @@ runs:
   using: "composite"
   steps:
     - name: Set up Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         node-version: "22"
     - name: Install Command Code CLI
