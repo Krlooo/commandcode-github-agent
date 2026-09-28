@@ -210,6 +210,12 @@ export async function main(): Promise<number> {
   }
 
   const github = new GitHubClient({ token, owner: trigger.owner, repo: trigger.repo });
+
+  // Bot loop guard: a bot-authored trigger must never start another run.
+  if (trigger.actor.endsWith("[bot]")) {
+    console.log(`Ignoring events from bot actor "${trigger.actor}" to avoid loops.`);
+    return 0;
+  }
   const model = env("INPUT_MODEL");
   const maxTurns = Number.parseInt(env("INPUT_MAX_TURNS", "100"), 10) || 100;
   const verifyCommand = env("INPUT_VERIFY_COMMAND");
