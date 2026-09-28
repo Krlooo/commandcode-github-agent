@@ -921,17 +921,8 @@ function buildReport(options) {
   lines.push(`Run: ${options.runUrl}`);
   return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
 }
-function buildAnswerComment(result, options) {
-  const lines = [];
-  lines.push(summarize(result.finalText, "(the agent returned no answer)"));
-  lines.push("");
-  lines.push("---");
-  const meta = [];
-  if (options.model) meta.push(`Model: ${options.model}`);
-  if (result.sessionId) meta.push(`Session: ${result.sessionId}`);
-  meta.push(`Run: ${options.runUrl}`);
-  lines.push(meta.join(" \xB7 "));
-  return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
+function buildAnswerComment(result) {
+  return truncate(summarize(result.finalText, "(the agent returned no answer)"), MAX_COMMENT_LENGTH);
 }
 async function safeDefaultBranch(github) {
   try {
@@ -1154,7 +1145,7 @@ async function main() {
       return 1;
     }
     const publishAnswer = async () => {
-      await comment(buildAnswerComment(implementer.result, { model, runUrl }));
+      await comment(buildAnswerComment(implementer.result));
       await react("rocket");
       return 0;
     };
