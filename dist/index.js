@@ -133,6 +133,10 @@ function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 async function setupAgentAuth(inputs, env2) {
+  const commandCodeKey = inputs.commandCodeApiKey?.trim();
+  if (commandCodeKey) {
+    return { envOverrides: { COMMAND_CODE_API_KEY: commandCodeKey } };
+  }
   const apiKey = inputs.providerApiKey?.trim();
   if (!apiKey) return { envOverrides: {} };
   const providerId = inputs.provider?.trim() || DEFAULT_PROVIDER_ID;
@@ -849,6 +853,7 @@ async function main() {
     try {
       const auth = await setupAgentAuth(
         {
+          commandCodeApiKey: env("INPUT_COMMAND_CODE_API_KEY"),
           provider: env("INPUT_PROVIDER"),
           providerBaseUrl: env("INPUT_PROVIDER_BASE_URL"),
           providerApiKey: env("INPUT_PROVIDER_API_KEY"),

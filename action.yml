@@ -25,6 +25,9 @@ inputs:
     description: "Run the reviewer agent pass after verification (true/false)."
     required: false
     default: "true"
+  command-code-api-key:
+    description: "Command Code API key (commandcode.ai/settings/keys), passed to the CLI as COMMAND_CODE_API_KEY. Recommended for CI; takes precedence over the BYOK provider inputs."
+    required: false
   provider:
     description: "BYOK provider id written to ~/.commandcode/providers.json (e.g. openrouter)."
     required: false
@@ -53,6 +56,7 @@ runs:
         INPUT_MAX_TURNS: ${{ inputs.max-turns }}
         INPUT_VERIFY_COMMAND: ${{ inputs.verify-command }}
         INPUT_REVIEW: ${{ inputs.review }}
+        INPUT_COMMAND_CODE_API_KEY: ${{ inputs.command-code-api-key }}
         INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
         INPUT_PROVIDER_API_KEY: ${{ inputs.provider-api-key }}

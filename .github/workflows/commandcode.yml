@@ -47,14 +47,9 @@ jobs:
         uses: ./
         with:
           verify-command: "npm ci && npm test && npm run typecheck"
-          # Command Code Provider API (OpenAI-compatible /chat/completions by default).
-          # The AGENT_API_KEY secret must be created in this repository
-          # (Settings > Secrets and variables > Actions) with a Command Code API key
-          # from https://commandcode.ai/settings/keys
-          provider: commandcode
-          provider-base-url: https://api.commandcode.ai/provider/v1
-          provider-api-key: ${{ secrets.AGENT_API_KEY }}
-          # Any model from https://api.commandcode.ai/provider/v1/models works here.
-          # Claude models need the /v1/messages endpoint; OpenAI-compatible and open
-          # models work with the default wire.
+          # Command Code API key from https://commandcode.ai/settings/keys, stored as
+          # the AGENT_API_KEY secret. This is the documented CI auth path: the CLI
+          # reads COMMAND_CODE_API_KEY at startup; no login is required.
+          command-code-api-key: ${{ secrets.AGENT_API_KEY }}
+          # Any model id from your Command Code plan (https://commandcode.ai/models).
           model: "deepseek/deepseek-v4-flash"

@@ -11,6 +11,7 @@ const DEFAULT_PROVIDER_ID = "agent";
 const DEFAULT_BASE_URL = "https://api.commandcode.ai/provider/v1";
 
 export interface AgentAuthInputs {
+  commandCodeApiKey?: string;
   provider?: string;
   providerBaseUrl?: string;
   providerApiKey?: string;
@@ -28,14 +29,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * Configures Command Code provider auth from action inputs.
  *
- * When an API key input is present, merges a provider entry into
- * `~/.commandcode/providers.json` and returns `{ CMD_LOCAL_ONLY, CMD_AGENT_PROVIDER_KEY }`.
- * When it is absent, the file is left untouched and `{}` is returned.
+ * A Command Code API key is returned as `{ COMMAND_CODE_API_KEY }` (the documented
+ * CI auth path: no login, no providers.json). A BYOK provider key merges a provider
+ * entry into `~/.commandcode/providers.json` and returns
+ * `{ CMD_LOCAL_ONLY, CMD_AGENT_PROVIDER_KEY }`. With neither, the file is left
+ * untouched and `{}` is returned.
  */
 export async function setupAgentAuth(
   inputs: AgentAuthInputs,
   env: Record<string, string | undefined>,
 ): Promise<AgentAuthResult> {
+  const commandCodeKey = inputs.commandCodeApiKey?.trim();
+  if (commandCodeKey) {
+    return { envOverrides: { COMMAND_CODE_API_KEY: commandCodeKey } };
+  }
+
   const apiKey = inputs.providerApiKey?.trim();
   if (!apiKey) return { envOverrides: {} };
 

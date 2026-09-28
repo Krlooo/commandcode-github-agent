@@ -342,6 +342,7 @@ export async function main(): Promise<number> {
     try {
       const auth = await setupAgentAuth(
         {
+          commandCodeApiKey: env("INPUT_COMMAND_CODE_API_KEY"),
           provider: env("INPUT_PROVIDER"),
           providerBaseUrl: env("INPUT_PROVIDER_BASE_URL"),
           providerApiKey: env("INPUT_PROVIDER_API_KEY"),
