@@ -28,4 +28,4 @@ installation tokens, instead of the workflow `GITHUB_TOKEN`.
   it is a one-time UI step after creation).
 
 Once the app exists, its install button lives at
-`https://github.com/apps/commandcode-agent` — the same one-click page opencode uses.
+`https://github.com/apps/command-code-agent` — the same one-click page opencode uses.
