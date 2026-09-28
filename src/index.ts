@@ -178,20 +178,11 @@ function buildReport(options: ReportOptions): string {
 }
 
 /**
- * The comment for a conversation turn: the agent's answer plus a small footer.
+ * The comment for a conversation turn: the agent's answer on its own.
  * Used when the task was a question and no files were changed.
  */
-function buildAnswerComment(result: AgentResult, options: { model: string; runUrl: string }): string {
-  const lines: string[] = [];
-  lines.push(summarize(result.finalText, "(the agent returned no answer)"));
-  lines.push("");
-  lines.push("---");
-  const meta: string[] = [];
-  if (options.model) meta.push(`Model: ${options.model}`);
-  if (result.sessionId) meta.push(`Session: ${result.sessionId}`);
-  meta.push(`Run: ${options.runUrl}`);
-  lines.push(meta.join(" · "));
-  return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
+function buildAnswerComment(result: AgentResult): string {
+  return truncate(summarize(result.finalText, "(the agent returned no answer)"), MAX_COMMENT_LENGTH);
 }
 
 async function safeDefaultBranch(github: GitHubClient): Promise<string> {
@@ -457,7 +448,7 @@ export async function main(): Promise<number> {
     // 7) Conversation mode: with no changes, the task was a question. Publish the
     // answer and skip the verification, review and PR pipeline entirely.
     const publishAnswer = async (): Promise<number> => {
-      await comment(buildAnswerComment(implementer.result, { model, runUrl }));
+      await comment(buildAnswerComment(implementer.result));
       await react("rocket");
       return 0;
     };
