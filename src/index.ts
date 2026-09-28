@@ -12,6 +12,7 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { runAgent, type AgentResult } from "./agent";
+import { downloadAttachments, extractAttachmentUrls } from "./attachments";
 import { setupAgentAuth } from "./auth";
 import { parseTrigger, type Trigger } from "./event";
 import * as git from "./git";
@@ -51,7 +52,7 @@ function parseMentions(value: string): string[] {
     .split(",")
     .map((mention) => mention.trim())
     .filter((mention) => mention.length > 0);
-  return mentions.length > 0 ? mentions : ["/cmd", "/commandcode", "@commandcode-agent"];
+  return mentions.length > 0 ? mentions : ["@commandcode-agent"];
 }
 
 function formatDuration(ms: number): string {
@@ -240,6 +241,10 @@ export async function main(): Promise<number> {
 
   const runUrl = `${env("GITHUB_SERVER_URL", "https://github.com")}/${trigger.owner}/${trigger.repo}/actions/runs/${env("GITHUB_RUN_ID")}`;
 
+  // Review comments carry their reactions on a different API route.
+  const reactionKind: "issue" | "review" =
+    trigger.kind === "pull_request_review_comment" ? "review" : "issue";
+
   let reactionId: number | undefined;
 
   const comment = async (message: string): Promise<void> => {
@@ -259,14 +264,14 @@ export async function main(): Promise<number> {
     if (trigger.commentId === undefined) return;
     if (reactionId !== undefined) {
       try {
-        await github.deleteReaction(trigger.commentId, reactionId);
+        await github.deleteReaction(trigger.commentId, reactionId, reactionKind);
       } catch (error) {
         console.warn("Failed to remove the initial reaction:", error);
       }
       reactionId = undefined;
     }
     try {
-      const reaction = await github.addReaction(trigger.commentId, content);
+      const reaction = await github.addReaction(trigger.commentId, content, reactionKind);
       reactionId = reaction.id;
     } catch (error) {
       console.warn("Failed to add a reaction:", error);
@@ -295,14 +300,20 @@ export async function main(): Promise<number> {
     // 3) Acknowledge the trigger with a reaction (best effort).
     if (trigger.commentId !== undefined) {
       try {
-        const reaction = await github.addReaction(trigger.commentId, "eyes");
+        const reaction = await github.addReaction(trigger.commentId, "eyes", reactionKind);
         reactionId = reaction.id;
       } catch (error) {
         console.warn("Failed to add the initial reaction:", error);
       }
     }
 
-    // 4) Gather context (recent comments).
+    // 4) Gather context: download any images attached to the trigger comment
+    // and load the recent comments (both best effort).
+    const attachmentPaths = await downloadAttachments(
+      extractAttachmentUrls(trigger.commentBody ?? ""),
+      token,
+    );
+
     let comments: { author: string; body: string }[] = [];
     if (trigger.number !== undefined) {
       try {
@@ -315,6 +326,8 @@ export async function main(): Promise<number> {
     // 5) Determine the working branch.
     let branch: string;
     let baseBranch = "";
+    let isFork = false;
+    let forkUrl: string | undefined;
     if (trigger.isPullRequest) {
       if (trigger.number === undefined) {
         logError("A pull request trigger without a number cannot be handled.");
@@ -322,19 +335,27 @@ export async function main(): Promise<number> {
       }
       const pull = await github.getPull(trigger.number);
       const expectedRepo = `${trigger.owner}/${trigger.repo}`;
-      if (!pull.head.repo || pull.head.repo.full_name !== expectedRepo) {
+      const headRepo = pull.head.repo?.full_name;
+      if (!headRepo) {
         await comment(
-          "Pull requests opened from a fork are not supported yet; please trigger the agent on an issue or a same-repository pull request.",
+          "The pull request head repository is missing; the fork may have been deleted.",
         );
         await react("-1");
         return 0;
       }
+      isFork = headRepo !== expectedRepo;
       branch = pull.head.ref;
       try {
         await git.configureAuth(workspace, token);
         try {
-          await git.fetchBranch(workspace, branch);
-          await git.checkoutBranch(workspace, branch);
+          if (isFork) {
+            forkUrl = `https://github.com/${headRepo}.git`;
+            await git.fetchUrl(workspace, forkUrl, branch);
+            await git.checkoutFetchHead(workspace, branch);
+          } else {
+            await git.fetchBranch(workspace, branch);
+            await git.checkoutBranch(workspace, branch);
+          }
         } finally {
           await git.unsetAuth(workspace);
         }
@@ -390,6 +411,7 @@ export async function main(): Promise<number> {
       comments,
       branch,
       task: trigger.prompt,
+      attachments: attachmentPaths,
     };
 
     // 6) Implementer agent.
@@ -472,7 +494,17 @@ export async function main(): Promise<number> {
 
     await git.configureAuth(workspace, token);
     try {
-      await git.push(workspace, branch);
+      await git.push(workspace, isFork ? forkUrl : undefined, branch);
+    } catch (error) {
+      if (isFork) {
+        await comment(
+          "The push to the fork branch failed. For fork pull requests the contributor must have 'Allow edits by maintainers' enabled, and the token must have access to the fork. " +
+            errorMessage(error),
+        );
+        await react("-1");
+        return 1;
+      }
+      throw error;
     } finally {
       await git.unsetAuth(workspace);
     }

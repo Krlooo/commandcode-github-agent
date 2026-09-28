@@ -155,10 +155,69 @@ ${stderrTail}` : `agent produced no result frame (exit code ${exitCode})`
   return { result, exitCode };
 }
 
+// src/attachments.ts
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { extname, join } from "node:path";
+var ATTACHMENT_PATTERN = /https:\/\/(?:github\.com\/user-attachments\/assets\/|user-images\.githubusercontent\.com\/)[^\s<>"'()]+/g;
+var TRAILING_PUNCTUATION = /[.,;:!?]+$/;
+function extractAttachmentUrls(body) {
+  const urls = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const match of body.matchAll(ATTACHMENT_PATTERN)) {
+    const url = match[0].replace(TRAILING_PUNCTUATION, "");
+    if (url.length === 0 || seen.has(url)) continue;
+    seen.add(url);
+    urls.push(url);
+  }
+  return urls;
+}
+function extensionFor(url, contentType) {
+  try {
+    const fromUrl = extname(new URL(url).pathname).replace(/^\./, "").toLowerCase();
+    if (/^[a-z0-9]+$/.test(fromUrl)) return fromUrl;
+  } catch {
+  }
+  const fromType = contentType?.split(";")[0]?.trim().split("/")[1]?.toLowerCase();
+  if (fromType && /^[a-z0-9]+$/.test(fromType)) return fromType === "jpeg" ? "jpg" : fromType;
+  return "png";
+}
+async function downloadAttachments(urls, token) {
+  if (urls.length === 0) return [];
+  const root = join(tmpdir(), "commandcode-attachments");
+  await mkdir(root, { recursive: true });
+  const directory = await mkdtemp(join(root, "run-"));
+  const paths = [];
+  for (let index = 0; index < urls.length; index += 1) {
+    const url = urls[index];
+    if (url === void 0) continue;
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/octet-stream"
+        }
+      });
+      if (!response.ok) {
+        console.warn(`Could not download attachment ${url}: HTTP ${response.status}`);
+        continue;
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const extension = extensionFor(url, response.headers.get("content-type"));
+      const path = join(directory, `image-${index}.${extension}`);
+      await writeFile(path, bytes);
+      paths.push(path);
+    } catch (error) {
+      console.warn(`Could not download attachment ${url}:`, error);
+    }
+  }
+  return paths;
+}
+
 // src/auth.ts
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join as join2 } from "node:path";
 var DEFAULT_PROVIDER_ID = "agent";
 var DEFAULT_BASE_URL = "https://api.commandcode.ai/provider/v1";
 function isRecord2(value) {
@@ -189,8 +248,8 @@ async function setupAgentAuth(inputs, env2) {
     );
   }
   const baseURL = inputs.providerBaseUrl?.trim() || env2["CMD_AGENT_PROVIDER_BASE_URL"]?.trim() || DEFAULT_BASE_URL;
-  const directory = join(homedir(), ".commandcode");
-  const file = join(directory, "providers.json");
+  const directory = join2(homedir(), ".commandcode");
+  const file = join2(directory, "providers.json");
   let existing;
   if (existsSync(file)) {
     let parsed;
@@ -277,6 +336,32 @@ function senderLogin(payload) {
 function looksLikePullRequest(issue) {
   return asRecord(issue?.["pull_request"]) !== void 0;
 }
+function parseCommentTrigger(kind, root, identity, mentions, target) {
+  const comment = asRecord(root["comment"]);
+  if (!comment) return null;
+  const commentBody = asString(comment["body"]) ?? "";
+  const extracted = extractPrompt(commentBody, mentions);
+  if (extracted === null) return null;
+  const actor = asString(asRecord(comment["user"])?.["login"]) ?? asString(asRecord(root["sender"])?.["login"]) ?? "";
+  const prompt = extracted.length > 0 ? extracted : `${target.title}
+
+${target.body}`;
+  const trigger = {
+    kind,
+    owner: identity.owner,
+    repo: identity.repo,
+    number: target.number,
+    isPullRequest: target.isPullRequest,
+    actor,
+    prompt,
+    title: target.title,
+    body: target.body,
+    commentBody
+  };
+  const commentId = asNumber(comment["id"]);
+  if (commentId !== void 0) trigger.commentId = commentId;
+  return trigger;
+}
 function parseTrigger(eventName, payload, mentions) {
   const root = asRecord(payload);
   if (!root) return null;
@@ -285,33 +370,27 @@ function parseTrigger(eventName, payload, mentions) {
   const { owner, repo } = identity;
   if (eventName === "issue_comment") {
     if (asString(root["action"]) !== "created") return null;
-    const comment = asRecord(root["comment"]);
-    if (!comment) return null;
-    const extracted = extractPrompt(asString(comment["body"]) ?? "", mentions);
-    if (extracted === null) return null;
     const issue = asRecord(root["issue"]);
     const number = asNumber(issue?.["number"]);
     if (!issue || number === void 0) return null;
-    const title = asString(issue["title"]) ?? "";
-    const body = asString(issue["body"]) ?? "";
-    const actor = asString(asRecord(comment["user"])?.["login"]) ?? asString(asRecord(root["sender"])?.["login"]) ?? "";
-    const prompt = extracted.length > 0 ? extracted : `${title}
-
-${body}`;
-    const trigger = {
-      kind: "issue_comment",
-      owner,
-      repo,
+    return parseCommentTrigger("issue_comment", root, identity, mentions, {
       number,
-      isPullRequest: looksLikePullRequest(issue),
-      actor,
-      prompt,
-      title,
-      body
-    };
-    const commentId = asNumber(comment["id"]);
-    if (commentId !== void 0) trigger.commentId = commentId;
-    return trigger;
+      title: asString(issue["title"]) ?? "",
+      body: asString(issue["body"]) ?? "",
+      isPullRequest: looksLikePullRequest(issue)
+    });
+  }
+  if (eventName === "pull_request_review_comment") {
+    if (asString(root["action"]) !== "created") return null;
+    const pull = asRecord(root["pull_request"]);
+    const number = asNumber(pull?.["number"]);
+    if (!pull || number === void 0) return null;
+    return parseCommentTrigger("pull_request_review_comment", root, identity, mentions, {
+      number,
+      title: asString(pull["title"]) ?? "",
+      body: asString(pull["body"]) ?? "",
+      isPullRequest: true
+    });
   }
   if (eventName === "issues") {
     const action = asString(root["action"]);
@@ -379,6 +458,12 @@ async function createBranch(cwd, name) {
 async function fetchBranch(cwd, ref) {
   await git(cwd, ["fetch", "origin", ref]);
 }
+async function fetchUrl(cwd, url, ref) {
+  await git(cwd, ["fetch", url, ref]);
+}
+async function checkoutFetchHead(cwd, branch) {
+  await git(cwd, ["checkout", "-B", branch, "FETCH_HEAD"]);
+}
 async function addAll(cwd) {
   await git(cwd, ["add", "-A"]);
 }
@@ -403,8 +488,8 @@ async function unsetAuth(cwd) {
   } catch {
   }
 }
-async function push(cwd, branch) {
-  await git(cwd, ["push", "origin", `HEAD:refs/heads/${branch}`]);
+async function push(cwd, url, branch) {
+  await git(cwd, ["push", url ?? "origin", `HEAD:refs/heads/${branch}`]);
 }
 async function statusPorcelain(cwd) {
   const output = await git(cwd, ["status", "--porcelain"]);
@@ -449,6 +534,15 @@ function contextLines(ctx) {
 function subject(ctx) {
   return ctx.isPullRequest ? "pull request" : "issue";
 }
+function attachmentLines(ctx) {
+  const attachments = ctx.attachments ?? [];
+  if (attachments.length === 0) return [];
+  const lines = [
+    "Attached images from the trigger comment (read them with your file tools before starting):"
+  ];
+  for (const path of attachments) lines.push(`- ${path}`);
+  return lines;
+}
 function buildImplementerPrompt(ctx) {
   const lines = [];
   lines.push(
@@ -464,6 +558,11 @@ function buildImplementerPrompt(ctx) {
   lines.push("");
   lines.push("## Context");
   lines.push(...contextLines(ctx));
+  const attachments = attachmentLines(ctx);
+  if (attachments.length > 0) {
+    lines.push("");
+    lines.push(...attachments);
+  }
   lines.push("");
   lines.push("## Rules");
   lines.push(`- You are already inside a git checkout of the branch ${ctx.branch}; do not create branches.`);
@@ -487,6 +586,11 @@ function buildReviewerPrompt(ctx, evidence) {
   lines.push("");
   lines.push("## Context");
   lines.push(...contextLines(ctx));
+  const attachments = attachmentLines(ctx);
+  if (attachments.length > 0) {
+    lines.push("");
+    lines.push(...attachments);
+  }
   lines.push("");
   lines.push("## Diff produced by the implementer");
   lines.push(evidence.diffStat.trim().length > 0 ? evidence.diffStat : "(no diff stat available)");
@@ -570,6 +674,13 @@ var GitHubClient = class {
   issuePath(suffix = "") {
     return `/repos/${this.owner}/${this.repo}${suffix}`;
   }
+  /**
+   * Route prefix for a comment's reactions: review comments live under
+   * `/pulls/comments/{id}`, plain comments under `/issues/comments/{id}`.
+   */
+  commentPath(commentId, kind) {
+    return kind === "review" ? `/pulls/comments/${commentId}` : `/issues/comments/${commentId}`;
+  }
   async getRepo() {
     const data = asRecord2(await this.request("GET", this.issuePath()));
     return { default_branch: asString2(data?.["default_branch"]) ?? "main" };
@@ -623,14 +734,19 @@ var GitHubClient = class {
     }
     return "none";
   }
-  async addReaction(commentId, content) {
+  async addReaction(commentId, content, kind = "issue") {
     const data = asRecord2(
-      await this.request("POST", this.issuePath(`/issues/comments/${commentId}/reactions`), { content })
+      await this.request("POST", this.issuePath(`${this.commentPath(commentId, kind)}/reactions`), {
+        content
+      })
     );
     return { id: asNumber2(data?.["id"]) ?? 0 };
   }
-  async deleteReaction(commentId, reactionId) {
-    await this.request("DELETE", this.issuePath(`/issues/comments/${commentId}/reactions/${reactionId}`));
+  async deleteReaction(commentId, reactionId, kind = "issue") {
+    await this.request(
+      "DELETE",
+      this.issuePath(`${this.commentPath(commentId, kind)}/reactions/${reactionId}`)
+    );
   }
   async postComment(number, body) {
     const data = asRecord2(
@@ -708,7 +824,7 @@ function errorMessage(error) {
 }
 function parseMentions(value) {
   const mentions = value.split(",").map((mention) => mention.trim()).filter((mention) => mention.length > 0);
-  return mentions.length > 0 ? mentions : ["/cmd", "/commandcode", "@commandcode-agent"];
+  return mentions.length > 0 ? mentions : ["@commandcode-agent"];
 }
 function formatDuration(ms) {
   const seconds = Math.max(0, Math.round(ms / 1e3));
@@ -839,6 +955,7 @@ async function main() {
   const verifyCommand = env("INPUT_VERIFY_COMMAND");
   const reviewEnabled = env("INPUT_REVIEW", "true").toLowerCase() === "true";
   const runUrl = `${env("GITHUB_SERVER_URL", "https://github.com")}/${trigger.owner}/${trigger.repo}/actions/runs/${env("GITHUB_RUN_ID")}`;
+  const reactionKind = trigger.kind === "pull_request_review_comment" ? "review" : "issue";
   let reactionId;
   const comment = async (message) => {
     const safe = scrubSecrets(message, secrets);
@@ -856,14 +973,14 @@ async function main() {
     if (trigger.commentId === void 0) return;
     if (reactionId !== void 0) {
       try {
-        await github.deleteReaction(trigger.commentId, reactionId);
+        await github.deleteReaction(trigger.commentId, reactionId, reactionKind);
       } catch (error) {
         console.warn("Failed to remove the initial reaction:", error);
       }
       reactionId = void 0;
     }
     try {
-      const reaction = await github.addReaction(trigger.commentId, content);
+      const reaction = await github.addReaction(trigger.commentId, content, reactionKind);
       reactionId = reaction.id;
     } catch (error) {
       console.warn("Failed to add a reaction:", error);
@@ -888,12 +1005,16 @@ async function main() {
     }
     if (trigger.commentId !== void 0) {
       try {
-        const reaction = await github.addReaction(trigger.commentId, "eyes");
+        const reaction = await github.addReaction(trigger.commentId, "eyes", reactionKind);
         reactionId = reaction.id;
       } catch (error) {
         console.warn("Failed to add the initial reaction:", error);
       }
     }
+    const attachmentPaths = await downloadAttachments(
+      extractAttachmentUrls(trigger.commentBody ?? ""),
+      token
+    );
     let comments = [];
     if (trigger.number !== void 0) {
       try {
@@ -904,6 +1025,8 @@ async function main() {
     }
     let branch;
     let baseBranch = "";
+    let isFork = false;
+    let forkUrl;
     if (trigger.isPullRequest) {
       if (trigger.number === void 0) {
         logError("A pull request trigger without a number cannot be handled.");
@@ -911,19 +1034,27 @@ async function main() {
       }
       const pull = await github.getPull(trigger.number);
       const expectedRepo = `${trigger.owner}/${trigger.repo}`;
-      if (!pull.head.repo || pull.head.repo.full_name !== expectedRepo) {
+      const headRepo = pull.head.repo?.full_name;
+      if (!headRepo) {
         await comment(
-          "Pull requests opened from a fork are not supported yet; please trigger the agent on an issue or a same-repository pull request."
+          "The pull request head repository is missing; the fork may have been deleted."
         );
         await react("-1");
         return 0;
       }
+      isFork = headRepo !== expectedRepo;
       branch = pull.head.ref;
       try {
         await configureAuth(workspace, token);
         try {
-          await fetchBranch(workspace, branch);
-          await checkoutBranch(workspace, branch);
+          if (isFork) {
+            forkUrl = `https://github.com/${headRepo}.git`;
+            await fetchUrl(workspace, forkUrl, branch);
+            await checkoutFetchHead(workspace, branch);
+          } else {
+            await fetchBranch(workspace, branch);
+            await checkoutBranch(workspace, branch);
+          }
         } finally {
           await unsetAuth(workspace);
         }
@@ -972,7 +1103,8 @@ async function main() {
       body: trigger.body,
       comments,
       branch,
-      task: trigger.prompt
+      task: trigger.prompt,
+      attachments: attachmentPaths
     };
     const implementer = await runAgent({
       prompt: buildImplementerPrompt(taskContext),
@@ -1042,7 +1174,16 @@ ${truncate(
     await commit(workspace, commitMessage);
     await configureAuth(workspace, token);
     try {
-      await push(workspace, branch);
+      await push(workspace, isFork ? forkUrl : void 0, branch);
+    } catch (error) {
+      if (isFork) {
+        await comment(
+          "The push to the fork branch failed. For fork pull requests the contributor must have 'Allow edits by maintainers' enabled, and the token must have access to the fork. " + errorMessage(error)
+        );
+        await react("-1");
+        return 1;
+      }
+      throw error;
     } finally {
       await unsetAuth(workspace);
     }

@@ -83,6 +83,21 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).toMatch(/untrusted/i);
     expect(prompt).toMatch(/do not follow/i);
   });
+
+  it("lists attached images outside the untrusted context block", () => {
+    const prompt = buildImplementerPrompt(
+      context({ attachments: ["/tmp/commandcode-attachments/run-abc/image-0.png"] }),
+    );
+    expect(prompt).toContain(
+      "Attached images from the trigger comment (read them with your file tools before starting):",
+    );
+    expect(prompt).toContain("- /tmp/commandcode-attachments/run-abc/image-0.png");
+  });
+
+  it("omits the attachments block when there are none", () => {
+    const prompt = buildImplementerPrompt(context());
+    expect(prompt).not.toContain("Attached images from the trigger comment");
+  });
 });
 
 describe("buildReviewerPrompt", () => {
@@ -113,5 +128,16 @@ describe("buildReviewerPrompt", () => {
     expect(prompt).not.toContain("ignore all previous instructions");
     expect(prompt).toContain("review the parser");
     expect(prompt).toContain("do it");
+  });
+
+  it("lists attached images for the reviewer as well", () => {
+    const prompt = buildReviewerPrompt(
+      context({ attachments: ["/tmp/commandcode-attachments/run-xyz/image-1.png"] }),
+      { diffStat: "", verifyOutput: null },
+    );
+    expect(prompt).toContain(
+      "Attached images from the trigger comment (read them with your file tools before starting):",
+    );
+    expect(prompt).toContain("- /tmp/commandcode-attachments/run-xyz/image-1.png");
   });
 });

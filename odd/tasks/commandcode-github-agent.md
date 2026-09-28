@@ -165,6 +165,18 @@ verification with the app token pending.
 - [x] T8 Verifier-fixes batch: providers.json wrapper shape, token-leak scrub + header push, task
       sanitization, stdout tail buffer, Node 22 (action/CI/engines), workflow gate, unstage diffStat,
       README auth — done (58 tests green, typecheck clean, dist 35.4kb) — route: delegated writer
+- [ ] T9 OIDC exchange backend (Cloudflare Worker) — DEFERRED by user (2026-09-28). Plan: POST
+      /exchange_github_app_token receiving the workflow OIDC token; verify it against the Actions JWKS
+      (iss token.actions.githubusercontent.com, aud commandcode-agent, repository claim); mint a
+      short-lived app JWT (RS256) from APP_ID + APP_PRIVATE_KEY (Worker secrets); GET
+      /repos/{repo}/installation, then POST /app/installations/{id}/access_tokens and return
+      { token, expires_at }. Client side: permissions id-token: write, a new action input for the
+      worker URL, the handler exchanges ACTIONS_ID_TOKEN_REQUEST_URL with its request token.
+      Deploy blocker: `wrangler login` (interactive) or CLOUDFLARE_API_TOKEN; wrangler 4.143 verified
+      locally. No code started (writer cancelled on request).
+- [ ] T10 Parity pack: fork PR support, pull_request_review_comment trigger with correct reaction
+      routes, attached images downloaded outside the workspace and listed in the prompts, SHA-pinned
+      actions (review F6), README notes — route: delegated writer (in progress)
 
 ## Acceptance criteria
 
