@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DEFAULT_PROVIDER_ID = "agent";
-const DEFAULT_BASE_URL = "https://api.commandcode.ai/v1";
+const DEFAULT_BASE_URL = "https://api.commandcode.ai/provider/v1";
 
 export interface AgentAuthInputs {
   provider?: string;

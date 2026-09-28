@@ -128,7 +128,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 var DEFAULT_PROVIDER_ID = "agent";
-var DEFAULT_BASE_URL = "https://api.commandcode.ai/v1";
+var DEFAULT_BASE_URL = "https://api.commandcode.ai/provider/v1";
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

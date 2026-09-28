@@ -47,13 +47,14 @@ jobs:
         uses: ./
         with:
           verify-command: "npm ci && npm test && npm run typecheck"
-          # Model id passed to the CLI (required when provider-api-key is set).
-          # Replace it with a model id your provider serves.
-          model: "anthropic/claude-sonnet-4.5"
-          # BYOK provider configuration. The AGENT_API_KEY secret must be created
-          # in this repository (Settings > Secrets and variables > Actions) before
-          # the agent can call a model. The provider values below are examples:
-          # swap them (and the model) for the provider you actually use.
-          provider: openrouter
-          provider-base-url: https://openrouter.ai/api/v1
+          # Command Code Provider API (OpenAI-compatible /chat/completions by default).
+          # The AGENT_API_KEY secret must be created in this repository
+          # (Settings > Secrets and variables > Actions) with a Command Code API key
+          # from https://commandcode.ai/settings/keys
+          provider: commandcode
+          provider-base-url: https://api.commandcode.ai/provider/v1
           provider-api-key: ${{ secrets.AGENT_API_KEY }}
+          # Any model from https://api.commandcode.ai/provider/v1/models works here.
+          # Claude models need the /v1/messages endpoint; OpenAI-compatible and open
+          # models work with the default wire.
+          model: "deepseek/deepseek-v4-flash"
