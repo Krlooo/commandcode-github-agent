@@ -1,0 +1,63 @@
+name: commandcode
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Task for the Command Code agent to implement."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: commandcode-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  commandcode:
+    # Admit: a non-bot comment carrying a /cmd or /commandcode trigger, an issue
+    # opened with the "commandcode" label, or a manual run. This is a coarse
+    # gate; the handler's parser applies the precise word-boundary rule.
+    if: >-
+      (github.event_name == 'issue_comment' &&
+      github.event.comment.user.type != 'Bot' &&
+      (contains(github.event.comment.body, '/cmd') ||
+      contains(github.event.comment.body, '/commandcode'))) ||
+      (github.event_name == 'issues' &&
+      contains(github.event.issue.labels.*.name, 'commandcode')) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The app token replaces the workflow GITHUB_TOKEN for the agent: comments,
+      # reactions and pushes carry the commandcode-agent[bot] identity, and -
+      # unlike GITHUB_TOKEN - PRs opened with it DO trigger other workflows (CI).
+      - name: Create the app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Run the Command Code agent
+        uses: ./
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          verify-command: "npm ci && npm test && npm run typecheck"
+          # Command Code API key from https://commandcode.ai/settings/keys, stored as
+          # the AGENT_API_KEY secret. This is the documented CI auth path: the CLI
+          # reads COMMAND_CODE_API_KEY at startup; no login is required.
+          command-code-api-key: ${{ secrets.AGENT_API_KEY }}
+          # Any model id from your Command Code plan (https://commandcode.ai/models).
+          model: "deepseek/deepseek-v4-flash"
