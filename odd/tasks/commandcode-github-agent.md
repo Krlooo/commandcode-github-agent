@@ -101,6 +101,31 @@ Deferred gaps (from the benchmark, not in the MVP):
   brings a real `commandcode-agent[bot]` identity. Co-author trailers intentionally not added (user
   convention).
 
+## E2E and verifier results (2026-09-28)
+
+Live end-to-end (local handler against real GitHub + real CLI, issue #2 -> PR #3):
+- Trigger -> permission gate -> branch `commandcode/issue-2-<ts>` -> implementer -> verify -> reviewer ->
+  commit/push -> PR #3 with the Task/What changed/Verification/Review body + `Closes #2` -> final comment
+  with run link, model, both session ids and duration. Reactions: `-1` on the failed attempt, `rocket` on
+  success. Artifact `docs/SMOKE_TEST.md` byte-verified by the reviewer agent.
+- First attempt failed with "Not authenticated": discovered that BYOK alone (even with local-only) does
+  not authenticate headless `cmdc` 1.66; the documented CI path is `COMMAND_CODE_API_KEY`
+  (commandcode.ai/docs/studio). Implemented in 899b133 and validated live (exit 0, full pipeline).
+
+Independent verifier verdict (same day): FAIL with actionable findings, three of them serious —
+(a) providers.json written flat instead of `{"provider":{...}}` (silently ignored by the CLI),
+(b) push token could leak into a public comment through execFile's error message,
+(c) the task text bypassed sanitization. Plus Node>=22 requirement, stdout tail-buffer bug, workflow gate
+alignment, hidden `git add -A` staging, and smaller notes. Fixes applied in one batch (see Tasks T8) with
+TDD for the pure logic.
+
+GitHub App created (2026-09-28): id 5110077, slug `commandcode-agent`, install page
+github.com/apps/commandcode-agent, permissions contents/issues/pull_requests write + metadata read.
+`APP_ID` variable and `APP_PRIVATE_KEY` secret configured in the repo; private key stored outside the
+repo under `~/.commandcode-agent/`. Logo downloaded from commandcode.ai to `app/logo.png` (UI upload
+pending). Repository made public, so Actions runs free; PR CI green. App installation + dogfood
+verification with the app token pending.
+
 ## Phase 2 (authorized): GitHub App
 
 - Create the Command Code Agent GitHub App. GitHub has no API to create Apps; the official manifest flow
@@ -133,8 +158,13 @@ Deferred gaps (from the benchmark, not in the MVP):
 - [x] T5 Smoke: live `cmdc -p` through the adapter (opt-in integration test, SMOKE=1) — done: observed
       RED (exit 1: argv shell-quoting broke the multi-word prompt) -> stdin fix fdcb964 -> observed GREEN
       (exitCode 0, finalText "SMOKE_OK", sessionId captured) — route: inline
-- [ ] T6 Publish: create GitHub remote, push, secrets, real issue test — requires user OK
-- [ ] T7 GitHub App: manifest + one-click creation + app-token workflow path — phase 2
+- [x] T6 Publish: GitHub remote (private, then public), push, secrets (AGENT_API_KEY / APP_ID /
+      APP_PRIVATE_KEY), real-issue test — done: covered by the local E2E (PR #3)
+- [ ] T7 GitHub App: manifest + one-click creation done (id 5110077, slug commandcode-agent); pending:
+      app installation + logo upload + app-token workflow path
+- [x] T8 Verifier-fixes batch: providers.json wrapper shape, token-leak scrub + header push, task
+      sanitization, stdout tail buffer, Node 22 (action/CI/engines), workflow gate, unstage diffStat,
+      README auth — done (58 tests green, typecheck clean, dist 35.4kb) — route: delegated writer
 
 ## Acceptance criteria
 
