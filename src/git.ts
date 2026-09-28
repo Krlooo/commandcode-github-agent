@@ -48,18 +48,31 @@ export function basicAuthHeader(token: string): string {
 }
 
 /**
- * Pushes the current HEAD to `origin` as `branch` using a request header for
- * authentication, so the token never appears in a remote URL (or, more
- * generally, as a bare token) in argv.
+ * Configures the local git auth header for github.com. This REPLACES any header
+ * left behind by `actions/checkout` (persist-credentials), which would otherwise
+ * shadow it with the workflow GITHUB_TOKEN, and keeps the token out of argv.
  */
-export async function push(cwd: string, options: { token: string; branch: string }): Promise<void> {
+export async function configureAuth(cwd: string, token: string): Promise<void> {
   await git(cwd, [
-    "-c",
-    `http.extraheader=${basicAuthHeader(options.token)}`,
-    "push",
-    "origin",
-    `HEAD:refs/heads/${options.branch}`,
+    "config",
+    "--local",
+    "http.https://github.com/.extraheader",
+    basicAuthHeader(token),
   ]);
+}
+
+/** Removes the local auth header; safe when none is configured. */
+export async function unsetAuth(cwd: string): Promise<void> {
+  try {
+    await git(cwd, ["config", "--local", "--unset-all", "http.https://github.com/.extraheader"]);
+  } catch {
+    // no header was configured
+  }
+}
+
+/** Pushes the current HEAD to `origin` as `branch` (auth via `configureAuth`). */
+export async function push(cwd: string, branch: string): Promise<void> {
+  await git(cwd, ["push", "origin", `HEAD:refs/heads/${branch}`]);
 }
 
 export async function statusPorcelain(cwd: string): Promise<string[]> {

@@ -324,8 +324,10 @@ export async function main(): Promise<number> {
       }
       branch = pull.head.ref;
       try {
+        await git.configureAuth(workspace, token);
         await git.fetchBranch(workspace, branch);
         await git.checkoutBranch(workspace, branch);
+        await git.unsetAuth(workspace);
       } catch (error) {
         await comment(`Could not check out the pull request branch \`${branch}\`: ${errorMessage(error)}`);
         await react("-1");
@@ -458,7 +460,9 @@ export async function main(): Promise<number> {
     )}`;
     await git.commit(workspace, commitMessage);
 
-    await git.push(workspace, { token, branch });
+    await git.configureAuth(workspace, token);
+    await git.push(workspace, branch);
+    await git.unsetAuth(workspace);
 
     // 11) + 12) Open a PR for issues; the push already updated the PR branch otherwise.
     let prUrl: string | null = null;
