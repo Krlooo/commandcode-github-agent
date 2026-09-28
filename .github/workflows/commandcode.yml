@@ -39,6 +39,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # The handler configures its own auth header (the app token) for
+          # fetch/push; a persisted checkout credential would shadow it.
+          persist-credentials: false
 
       # The app token replaces the workflow GITHUB_TOKEN for the agent: comments,
       # reactions and pushes carry the commandcode-agent[bot] identity, and -

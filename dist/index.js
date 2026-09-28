@@ -353,14 +353,22 @@ function basicAuthHeader(token) {
   const encoded = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
   return `AUTHORIZATION: basic ${encoded}`;
 }
-async function push(cwd, options) {
+async function configureAuth(cwd, token) {
   await git(cwd, [
-    "-c",
-    `http.extraheader=${basicAuthHeader(options.token)}`,
-    "push",
-    "origin",
-    `HEAD:refs/heads/${options.branch}`
+    "config",
+    "--local",
+    "http.https://github.com/.extraheader",
+    basicAuthHeader(token)
   ]);
+}
+async function unsetAuth(cwd) {
+  try {
+    await git(cwd, ["config", "--local", "--unset-all", "http.https://github.com/.extraheader"]);
+  } catch {
+  }
+}
+async function push(cwd, branch) {
+  await git(cwd, ["push", "origin", `HEAD:refs/heads/${branch}`]);
 }
 async function statusPorcelain(cwd) {
   const output = await git(cwd, ["status", "--porcelain"]);
@@ -866,8 +874,10 @@ async function main() {
       }
       branch = pull.head.ref;
       try {
+        await configureAuth(workspace, token);
         await fetchBranch(workspace, branch);
         await checkoutBranch(workspace, branch);
+        await unsetAuth(workspace);
       } catch (error) {
         await comment(`Could not check out the pull request branch \`${branch}\`: ${errorMessage(error)}`);
         await react("-1");
@@ -981,7 +991,9 @@ ${truncate(
       2e3
     )}`;
     await commit(workspace, commitMessage);
-    await push(workspace, { token, branch });
+    await configureAuth(workspace, token);
+    await push(workspace, branch);
+    await unsetAuth(workspace);
     let prUrl = null;
     if (!trigger.isPullRequest) {
       const prTitle = trigger.number !== void 0 ? `${trigger.title || firstLine(trigger.prompt)} (#${trigger.number})` : firstLine(trigger.prompt);
