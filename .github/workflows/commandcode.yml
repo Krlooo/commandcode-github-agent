@@ -1,0 +1,59 @@
+name: commandcode
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Task for the Command Code agent to implement."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: commandcode-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  commandcode:
+    # Admit: a non-bot comment carrying a /cmd or /commandcode trigger at a word
+    # boundary, an issue opened with the "commandcode" label, or a manual run.
+    if: >-
+      (github.event_name == 'issue_comment' &&
+      github.event.comment.user.type != 'Bot' &&
+      (startsWith(github.event.comment.body, '/cmd') ||
+      contains(github.event.comment.body, ' /cmd') ||
+      startsWith(github.event.comment.body, '/commandcode') ||
+      contains(github.event.comment.body, ' /commandcode'))) ||
+      (github.event_name == 'issues' &&
+      contains(github.event.issue.labels.*.name, 'commandcode')) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run the Command Code agent
+        uses: ./
+        with:
+          verify-command: "npm ci && npm test && npm run typecheck"
+          # Model id passed to the CLI (required when provider-api-key is set).
+          # Replace it with a model id your provider serves.
+          model: "anthropic/claude-sonnet-4.5"
+          # BYOK provider configuration. The AGENT_API_KEY secret must be created
+          # in this repository (Settings > Secrets and variables > Actions) before
+          # the agent can call a model. The provider values below are examples:
+          # swap them (and the model) for the provider you actually use.
+          provider: openrouter
+          provider-base-url: https://openrouter.ai/api/v1
+          provider-api-key: ${{ secrets.AGENT_API_KEY }}

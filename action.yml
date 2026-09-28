@@ -1,0 +1,59 @@
+name: "Command Code Agent"
+description: "Run Command Code headless from a /cmd comment: implementer + verification + reviewer pipeline that opens a pull request"
+author: "Carlos Muñoz"
+
+branding:
+  icon: "cpu"
+  color: "blue"
+
+inputs:
+  mentions:
+    description: "Comma-separated trigger strings; a comment starting a line with one of them (at a word boundary) starts the agent."
+    required: false
+    default: "/cmd,/commandcode"
+  model:
+    description: "Model identifier passed to the Command Code CLI (-m). Required when provider-api-key is set."
+    required: false
+  max-turns:
+    description: "Maximum number of agent turns per agent run (implementer and reviewer)."
+    required: false
+    default: "100"
+  verify-command:
+    description: 'Command run after the implementer agent to verify the change (e.g. "npm ci && npm test").'
+    required: false
+  review:
+    description: "Run the reviewer agent pass after verification (true/false)."
+    required: false
+    default: "true"
+  provider:
+    description: "BYOK provider id written to ~/.commandcode/providers.json (e.g. openrouter)."
+    required: false
+  provider-base-url:
+    description: "Base URL for the BYOK provider (e.g. https://openrouter.ai/api/v1)."
+    required: false
+  provider-api-key:
+    description: "API key for the BYOK provider; provide it through a secret."
+    required: false
+  github-token:
+    description: "Token used for the GitHub API and git push; defaults to the workflow token"
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Command Code CLI
+      shell: bash
+      run: npm install -g command-code
+    - name: Run Command Code agent
+      shell: bash
+      run: node "${{ github.action_path }}/dist/index.js"
+      env:
+        INPUT_MENTIONS: ${{ inputs.mentions }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_MAX_TURNS: ${{ inputs.max-turns }}
+        INPUT_VERIFY_COMMAND: ${{ inputs.verify-command }}
+        INPUT_REVIEW: ${{ inputs.review }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}
+        INPUT_PROVIDER_API_KEY: ${{ inputs.provider-api-key }}
+        GITHUB_TOKEN: "${{ inputs.github-token != '' && inputs.github-token || github.token }}"
