@@ -17,6 +17,7 @@ import { parseTrigger, type Trigger } from "./event";
 import * as git from "./git";
 import { GitHubClient } from "./github";
 import { buildImplementerPrompt, buildReviewerPrompt, type TaskContext } from "./prompt";
+import { scrubSecrets } from "./scrub";
 
 const execFileAsync = promisify(execFile);
 
@@ -192,12 +193,21 @@ export async function main(): Promise<number> {
   const token = env("GITHUB_TOKEN");
   const workspace = env("GITHUB_WORKSPACE", process.cwd());
 
+  // Anything that can end up in a public comment or a log must be redacted: a
+  // failed `git push` embeds the command line (and thus the auth header) in its
+  // error message, which would otherwise leak the token into a comment.
+  const secrets = token ? [token, git.basicAuthHeader(token)] : [];
+  const logError = (message: string, error?: unknown): void => {
+    const detail = error === undefined ? "" : ` ${errorMessage(error)}`;
+    console.error(scrubSecrets(`${message}${detail}`, secrets));
+  };
+
   let payload: unknown = {};
   if (eventPath) {
     try {
       payload = JSON.parse(readFileSync(eventPath, "utf8"));
     } catch (error) {
-      console.error("Could not read the GitHub event payload:", error);
+      logError("Could not read the GitHub event payload:", error);
       return 0;
     }
   }
@@ -226,14 +236,15 @@ export async function main(): Promise<number> {
   let reactionId: number | undefined;
 
   const comment = async (message: string): Promise<void> => {
+    const safe = scrubSecrets(message, secrets);
     if (trigger.number === undefined) {
-      console.log(message);
+      console.log(safe);
       return;
     }
     try {
-      await github.postComment(trigger.number, truncate(message, MAX_COMMENT_LENGTH));
+      await github.postComment(trigger.number, truncate(safe, MAX_COMMENT_LENGTH));
     } catch (error) {
-      console.error("Failed to post a comment:", error);
+      logError("Failed to post a comment:", error);
     }
   };
 
@@ -261,7 +272,7 @@ export async function main(): Promise<number> {
     try {
       permission = await github.getCollaboratorPermissionLevel(trigger.actor);
     } catch (error) {
-      console.error("Could not verify the commenter's permission:", error);
+      logError("Could not verify the commenter's permission:", error);
       await comment(
         `Could not verify @${trigger.actor}'s permission on this repository; aborting the run.`,
       );
@@ -299,7 +310,7 @@ export async function main(): Promise<number> {
     let baseBranch = "";
     if (trigger.isPullRequest) {
       if (trigger.number === undefined) {
-        console.error("A pull request trigger without a number cannot be handled.");
+        logError("A pull request trigger without a number cannot be handled.");
         return 0;
       }
       const pull = await github.getPull(trigger.number);
@@ -447,8 +458,7 @@ export async function main(): Promise<number> {
     )}`;
     await git.commit(workspace, commitMessage);
 
-    const pushUrl = `https://x-access-token:${token}@github.com/${trigger.owner}/${trigger.repo}.git`;
-    await git.push(workspace, { url: pushUrl, branch });
+    await git.push(workspace, { token, branch });
 
     // 11) + 12) Open a PR for issues; the push already updated the PR branch otherwise.
     let prUrl: string | null = null;
@@ -491,7 +501,7 @@ export async function main(): Promise<number> {
     await react("rocket");
     return 0;
   } catch (error) {
-    console.error("The commandcode run failed:", error);
+    logError("The commandcode run failed:", error);
     await comment(
       `The commandcode run failed:\n\n\`\`\`\n${truncate(errorMessage(error), MAX_PR_VERIFY_OUTPUT)}\n\`\`\``,
     );
@@ -505,6 +515,9 @@ main()
     process.exitCode = code;
   })
   .catch((error: unknown) => {
-    console.error("Unhandled error in commandcode-github-agent:", error);
+    console.error(
+      "Unhandled error in commandcode-github-agent:",
+      scrubSecrets(errorMessage(error), []),
+    );
     process.exitCode = 1;
   });

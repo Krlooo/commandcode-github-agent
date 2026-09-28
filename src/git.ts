@@ -38,8 +38,28 @@ export async function commit(cwd: string, message: string): Promise<void> {
   await git(cwd, ["commit", "-m", message]);
 }
 
-export async function push(cwd: string, options: { url: string; branch: string }): Promise<void> {
-  await git(cwd, ["push", options.url, `HEAD:refs/heads/${options.branch}`]);
+/**
+ * Builds the Git HTTP authorization header for a GitHub token. Exposed so the
+ * caller can redact this exact header from any text (see `scrubSecrets`).
+ */
+export function basicAuthHeader(token: string): string {
+  const encoded = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
+  return `AUTHORIZATION: basic ${encoded}`;
+}
+
+/**
+ * Pushes the current HEAD to `origin` as `branch` using a request header for
+ * authentication, so the token never appears in a remote URL (or, more
+ * generally, as a bare token) in argv.
+ */
+export async function push(cwd: string, options: { token: string; branch: string }): Promise<void> {
+  await git(cwd, [
+    "-c",
+    `http.extraheader=${basicAuthHeader(options.token)}`,
+    "push",
+    "origin",
+    `HEAD:refs/heads/${options.branch}`,
+  ]);
 }
 
 export async function statusPorcelain(cwd: string): Promise<string[]> {
@@ -56,6 +76,9 @@ export async function diffStat(cwd: string): Promise<string> {
   // Stage everything first so untracked files are included in the captured diff.
   await addAll(cwd);
   const output = await git(cwd, ["diff", "--cached", "--stat"]);
+  // Restore the index (mixed reset, working tree untouched) so `git restore`
+  // semantics for the reviewer are the same as before the harness ran.
+  await git(cwd, ["reset"]);
   return output.trim();
 }
 

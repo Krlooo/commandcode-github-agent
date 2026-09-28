@@ -84,7 +84,7 @@ export function buildImplementerPrompt(ctx: TaskContext): string {
   lines.push(`Working branch: ${ctx.branch} (already checked out in this git checkout).`);
   lines.push("");
   lines.push("## Task");
-  lines.push(ctx.task || "(no task text provided)");
+  lines.push(sanitizeUntrusted(ctx.task) || "(no task text provided)");
   lines.push("");
   lines.push("## Context");
   lines.push(...contextLines(ctx));
@@ -113,7 +113,7 @@ export function buildReviewerPrompt(ctx: TaskContext, evidence: ReviewerEvidence
   lines.push(`Working branch: ${ctx.branch} (already checked out in this git checkout).`);
   lines.push("");
   lines.push("## Task to review");
-  lines.push(ctx.task || "(no task text provided)");
+  lines.push(sanitizeUntrusted(ctx.task) || "(no task text provided)");
   lines.push("");
   lines.push("## Context");
   lines.push(...contextLines(ctx));

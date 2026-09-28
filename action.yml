@@ -44,9 +44,14 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
     - name: Install Command Code CLI
       shell: bash
-      run: npm install -g command-code
+      # Pinned for reproducible CI; the CLI requires Node >= 22 (ensured above).
+      run: npm install -g command-code@1.66.0
     - name: Run Command Code agent
       shell: bash
       run: node "${{ github.action_path }}/dist/index.js"

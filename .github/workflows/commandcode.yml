@@ -23,15 +23,14 @@ concurrency:
 
 jobs:
   commandcode:
-    # Admit: a non-bot comment carrying a /cmd or /commandcode trigger at a word
-    # boundary, an issue opened with the "commandcode" label, or a manual run.
+    # Admit: a non-bot comment carrying a /cmd or /commandcode trigger, an issue
+    # opened with the "commandcode" label, or a manual run. This is a coarse
+    # gate; the handler's parser applies the precise word-boundary rule.
     if: >-
       (github.event_name == 'issue_comment' &&
       github.event.comment.user.type != 'Bot' &&
-      (startsWith(github.event.comment.body, '/cmd') ||
-      contains(github.event.comment.body, ' /cmd') ||
-      startsWith(github.event.comment.body, '/commandcode') ||
-      contains(github.event.comment.body, ' /commandcode'))) ||
+      (contains(github.event.comment.body, '/cmd') ||
+      contains(github.event.comment.body, '/commandcode'))) ||
       (github.event_name == 'issues' &&
       contains(github.event.issue.labels.*.name, 'commandcode')) ||
       github.event_name == 'workflow_dispatch'

@@ -137,10 +137,12 @@ function spawnAgent(
     };
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdout.length < MAX_BUFFER) stdout += chunk.toString("utf8");
+      // Keep the most recent output: the final {"type":"result"} frame is always
+      // last, so dropping the tail (rather than the head) never loses it.
+      stdout = (stdout + chunk.toString("utf8")).slice(-MAX_BUFFER);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      if (stderr.length < MAX_BUFFER) stderr += chunk.toString("utf8");
+      stderr = (stderr + chunk.toString("utf8")).slice(-MAX_BUFFER);
     });
     child.on("error", (error: Error) => {
       stderr += `\n${error.message}`;

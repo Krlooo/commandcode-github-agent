@@ -27,6 +27,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Returns a NEW providers config with `entry` registered under `providerId`.
+ *
+ * The CLI reads providers from a singular `provider` map; a legacy plural
+ * `providers` key is folded into it (the `provider` map wins on conflicts) and
+ * dropped. Every unrelated root key and every other provider is preserved, and
+ * the input object is never mutated.
+ */
+export function mergeProvidersConfig(
+  existing: unknown,
+  providerId: string,
+  entry: Record<string, unknown>,
+): Record<string, unknown> {
+  const root: Record<string, unknown> = isRecord(existing) ? { ...existing } : {};
+
+  const provider = isRecord(root["provider"]) ? { ...root["provider"] } : {};
+  const legacy = isRecord(root["providers"]) ? root["providers"] : undefined;
+
+  const merged: Record<string, unknown> = { ...(legacy ?? {}), ...provider };
+  merged[providerId] = entry;
+
+  delete root["providers"];
+  root["provider"] = merged;
+  return root;
+}
+
+/**
  * Configures Command Code provider auth from action inputs.
  *
  * A Command Code API key is returned as `{ COMMAND_CODE_API_KEY }` (the documented
@@ -61,34 +87,34 @@ export async function setupAgentAuth(
   const directory = join(homedir(), ".commandcode");
   const file = join(directory, "providers.json");
 
-  let providers: Record<string, unknown> = {};
+  let existing: unknown;
   if (existsSync(file)) {
     let parsed: unknown;
     let ok = false;
     try {
       parsed = JSON.parse(readFileSync(file, "utf8"));
-      if (isRecord(parsed)) {
-        providers = parsed;
-        ok = true;
-      }
+      ok = isRecord(parsed);
     } catch {
       ok = false;
     }
 
-    if (!ok) {
+    if (ok) {
+      existing = parsed;
+    } else {
       console.warn(
         `Could not parse ${file}; overwriting it with a fresh provider configuration.`,
       );
-      providers = {};
     }
   }
 
-  providers[providerId] = {
+  const entry = {
     name: providerId,
     baseURL,
     apiKey: "$CMD_AGENT_PROVIDER_KEY",
     models: { [modelId]: {} },
   };
+
+  const providers = mergeProvidersConfig(existing, providerId, entry);
 
   mkdirSync(directory, { recursive: true });
   writeFileSync(file, `${JSON.stringify(providers, null, 2)}\n`, "utf8");

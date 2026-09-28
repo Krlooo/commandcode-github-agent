@@ -38,10 +38,14 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
 
 1. Copy [`.github/workflows/commandcode.yml`](.github/workflows/commandcode.yml) into your
    repository, or adapt its `on:`/`uses:` block to point at this action.
-2. Create a provider secret (e.g. `AGENT_API_KEY`) and set `provider`, `provider-base-url` and
-   `model` in the `with:` block of the workflow.
+2. Create a Command Code API key (https://commandcode.ai/settings/keys), store it as a secret
+   (e.g. `AGENT_API_KEY`) and pass it as `command-code-api-key` in the `with:` block, together
+   with a `model` id from your plan. (BYOK is the alternative — see [Auth](#auth).)
 3. Comment `/cmd fix the flaky login test` on an issue (or add the `commandcode` label to a new
    issue).
+
+The action requires **Node.js 22** (it sets it up with `actions/setup-node` before installing the
+Command Code CLI), so you do not need to add a Node setup step yourself.
 
 The workflow **must** declare write permissions for the agent to push and comment:
 
@@ -61,6 +65,7 @@ permissions:
 | `max-turns` | `100` | Maximum number of agent turns per agent run (implementer and reviewer). |
 | `verify-command` | — | Command run after the implementer agent to verify the change (e.g. `npm ci && npm test`). |
 | `review` | `true` | Run the reviewer agent pass after verification (`true`/`false`). |
+| `command-code-api-key` | — | Command Code API key (https://commandcode.ai/settings/keys), exported to the CLI as `COMMAND_CODE_API_KEY`. **Recommended for CI**; takes precedence over the BYOK provider inputs. The same key works for the Provider API. |
 | `provider` | — | BYOK provider id written to `~/.commandcode/providers.json` (e.g. `openrouter`). |
 | `provider-base-url` | — | Base URL for the BYOK provider (e.g. `https://openrouter.ai/api/v1`). |
 | `provider-api-key` | — | API key for the BYOK provider; provide it through a secret. |
@@ -91,20 +96,41 @@ jobs:
       - uses: <owner>/commandcode-github-agent@main
         with:
           verify-command: "npm ci && npm test && npm run typecheck"
-          provider: openrouter
-          provider-base-url: https://openrouter.ai/api/v1
-          provider-api-key: ${{ secrets.AGENT_API_KEY }}
+          command-code-api-key: ${{ secrets.AGENT_API_KEY }}
           model: <model-id>
 ```
 
-## Auth (BYOK)
+For the BYOK alternative, replace `command-code-api-key` with `provider`,
+`provider-base-url` and `provider-api-key` (see [Auth](#auth)).
 
-The action installs the CLI with `npm install -g command-code` (binary `cmdc`). When
-`provider-api-key` is set, it writes `~/.commandcode/providers.json` with a `$VAR` reference —
-the key itself is never stored in the file; it is passed to the CLI through the
+## Auth
+
+The action installs the CLI with `npm install -g command-code@<pinned>` (binary `cmdc`); the CLI
+requires **Node.js 22**, which the action sets up for you.
+
+### Command Code API key (recommended for CI)
+
+Create a key at https://commandcode.ai/settings/keys, store it as a secret and pass it as
+`command-code-api-key`. The action exports it as `COMMAND_CODE_API_KEY`, which the CLI reads at
+startup — no interactive login and no `providers.json`. The same key also authorizes the Provider
+API.
+
+```yaml
+with:
+  command-code-api-key: ${{ secrets.COMMAND_CODE_API_KEY }}
+  model: <model-id>
+```
+
+This is the simplest, most reproducible CI path and takes precedence over the BYOK inputs below.
+
+### BYOK provider (alternative)
+
+When `provider-api-key` is set, the action writes `~/.commandcode/providers.json` with a `$VAR`
+reference — the key itself is never stored in the file; it is passed to the CLI through the
 `CMD_AGENT_PROVIDER_KEY` environment variable, alongside `CMD_LOCAL_ONLY=1` to keep the CLI
-offline from Command Code's own services. When no key is provided, the file is left untouched and
-the CLI falls back to its existing configuration.
+offline from Command Code's own services. That file uses the CLI's `{ "provider": { "<id>": … } }`
+shape (a legacy `providers` key is migrated on write). When no key is provided, the file is left
+untouched and the CLI falls back to its existing configuration.
 
 In short: bring your own provider key via a secret; the model is billed to that key.
 

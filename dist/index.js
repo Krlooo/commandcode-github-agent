@@ -73,10 +73,10 @@ function spawnAgent(binary, args, options) {
       resolve({ stdout, stderr, exitCode });
     };
     child.stdout?.on("data", (chunk) => {
-      if (stdout.length < MAX_BUFFER) stdout += chunk.toString("utf8");
+      stdout = (stdout + chunk.toString("utf8")).slice(-MAX_BUFFER);
     });
     child.stderr?.on("data", (chunk) => {
-      if (stderr.length < MAX_BUFFER) stderr += chunk.toString("utf8");
+      stderr = (stderr + chunk.toString("utf8")).slice(-MAX_BUFFER);
     });
     child.on("error", (error) => {
       stderr += `
@@ -132,6 +132,16 @@ var DEFAULT_BASE_URL = "https://api.commandcode.ai/provider/v1";
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function mergeProvidersConfig(existing, providerId, entry) {
+  const root = isRecord2(existing) ? { ...existing } : {};
+  const provider = isRecord2(root["provider"]) ? { ...root["provider"] } : {};
+  const legacy = isRecord2(root["providers"]) ? root["providers"] : void 0;
+  const merged = { ...legacy ?? {}, ...provider };
+  merged[providerId] = entry;
+  delete root["providers"];
+  root["provider"] = merged;
+  return root;
+}
 async function setupAgentAuth(inputs, env2) {
   const commandCodeKey = inputs.commandCodeApiKey?.trim();
   if (commandCodeKey) {
@@ -149,32 +159,31 @@ async function setupAgentAuth(inputs, env2) {
   const baseURL = inputs.providerBaseUrl?.trim() || env2["CMD_AGENT_PROVIDER_BASE_URL"]?.trim() || DEFAULT_BASE_URL;
   const directory = join(homedir(), ".commandcode");
   const file = join(directory, "providers.json");
-  let providers = {};
+  let existing;
   if (existsSync(file)) {
     let parsed;
     let ok = false;
     try {
       parsed = JSON.parse(readFileSync(file, "utf8"));
-      if (isRecord2(parsed)) {
-        providers = parsed;
-        ok = true;
-      }
+      ok = isRecord2(parsed);
     } catch {
       ok = false;
     }
-    if (!ok) {
+    if (ok) {
+      existing = parsed;
+    } else {
       console.warn(
         `Could not parse ${file}; overwriting it with a fresh provider configuration.`
       );
-      providers = {};
     }
   }
-  providers[providerId] = {
+  const entry = {
     name: providerId,
     baseURL,
     apiKey: "$CMD_AGENT_PROVIDER_KEY",
     models: { [modelId]: {} }
   };
+  const providers = mergeProvidersConfig(existing, providerId, entry);
   mkdirSync(directory, { recursive: true });
   writeFileSync(file, `${JSON.stringify(providers, null, 2)}
 `, "utf8");
@@ -340,8 +349,18 @@ async function addAll(cwd) {
 async function commit(cwd, message) {
   await git(cwd, ["commit", "-m", message]);
 }
+function basicAuthHeader(token) {
+  const encoded = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
+  return `AUTHORIZATION: basic ${encoded}`;
+}
 async function push(cwd, options) {
-  await git(cwd, ["push", options.url, `HEAD:refs/heads/${options.branch}`]);
+  await git(cwd, [
+    "-c",
+    `http.extraheader=${basicAuthHeader(options.token)}`,
+    "push",
+    "origin",
+    `HEAD:refs/heads/${options.branch}`
+  ]);
 }
 async function statusPorcelain(cwd) {
   const output = await git(cwd, ["status", "--porcelain"]);
@@ -350,6 +369,7 @@ async function statusPorcelain(cwd) {
 async function diffStat(cwd) {
   await addAll(cwd);
   const output = await git(cwd, ["diff", "--cached", "--stat"]);
+  await git(cwd, ["reset"]);
   return output.trim();
 }
 
@@ -396,7 +416,7 @@ function buildImplementerPrompt(ctx) {
   lines.push(`Working branch: ${ctx.branch} (already checked out in this git checkout).`);
   lines.push("");
   lines.push("## Task");
-  lines.push(ctx.task || "(no task text provided)");
+  lines.push(sanitizeUntrusted(ctx.task) || "(no task text provided)");
   lines.push("");
   lines.push("## Context");
   lines.push(...contextLines(ctx));
@@ -419,7 +439,7 @@ function buildReviewerPrompt(ctx, evidence) {
   lines.push(`Working branch: ${ctx.branch} (already checked out in this git checkout).`);
   lines.push("");
   lines.push("## Task to review");
-  lines.push(ctx.task || "(no task text provided)");
+  lines.push(sanitizeUntrusted(ctx.task) || "(no task text provided)");
   lines.push("");
   lines.push("## Context");
   lines.push(...contextLines(ctx));
@@ -603,6 +623,17 @@ var GitHubClient = class {
   }
 };
 
+// src/scrub.ts
+var ACCESS_TOKEN_URL = /x-access-token:[^@\s]+@/g;
+function scrubSecrets(text, secrets) {
+  let scrubbed = text.replace(ACCESS_TOKEN_URL, "x-access-token:***@");
+  for (const secret of secrets) {
+    if (secret.length === 0) continue;
+    scrubbed = scrubbed.split(secret).join("***");
+  }
+  return scrubbed;
+}
+
 // src/index.ts
 var execFileAsync2 = promisify2(execFile2);
 var MAX_COMMENT_LENGTH = 6e4;
@@ -724,12 +755,17 @@ async function main() {
   const eventPath = env("GITHUB_EVENT_PATH");
   const token = env("GITHUB_TOKEN");
   const workspace = env("GITHUB_WORKSPACE", process.cwd());
+  const secrets = token ? [token, basicAuthHeader(token)] : [];
+  const logError = (message, error) => {
+    const detail = error === void 0 ? "" : ` ${errorMessage(error)}`;
+    console.error(scrubSecrets(`${message}${detail}`, secrets));
+  };
   let payload = {};
   if (eventPath) {
     try {
       payload = JSON.parse(readFileSync2(eventPath, "utf8"));
     } catch (error) {
-      console.error("Could not read the GitHub event payload:", error);
+      logError("Could not read the GitHub event payload:", error);
       return 0;
     }
   }
@@ -751,14 +787,15 @@ async function main() {
   const runUrl = `${env("GITHUB_SERVER_URL", "https://github.com")}/${trigger.owner}/${trigger.repo}/actions/runs/${env("GITHUB_RUN_ID")}`;
   let reactionId;
   const comment = async (message) => {
+    const safe = scrubSecrets(message, secrets);
     if (trigger.number === void 0) {
-      console.log(message);
+      console.log(safe);
       return;
     }
     try {
-      await github.postComment(trigger.number, truncate(message, MAX_COMMENT_LENGTH));
+      await github.postComment(trigger.number, truncate(safe, MAX_COMMENT_LENGTH));
     } catch (error) {
-      console.error("Failed to post a comment:", error);
+      logError("Failed to post a comment:", error);
     }
   };
   const react = async (content) => {
@@ -783,7 +820,7 @@ async function main() {
     try {
       permission = await github.getCollaboratorPermissionLevel(trigger.actor);
     } catch (error) {
-      console.error("Could not verify the commenter's permission:", error);
+      logError("Could not verify the commenter's permission:", error);
       await comment(
         `Could not verify @${trigger.actor}'s permission on this repository; aborting the run.`
       );
@@ -815,7 +852,7 @@ async function main() {
     let baseBranch = "";
     if (trigger.isPullRequest) {
       if (trigger.number === void 0) {
-        console.error("A pull request trigger without a number cannot be handled.");
+        logError("A pull request trigger without a number cannot be handled.");
         return 0;
       }
       const pull = await github.getPull(trigger.number);
@@ -944,8 +981,7 @@ ${truncate(
       2e3
     )}`;
     await commit(workspace, commitMessage);
-    const pushUrl = `https://x-access-token:${token}@github.com/${trigger.owner}/${trigger.repo}.git`;
-    await push(workspace, { url: pushUrl, branch });
+    await push(workspace, { token, branch });
     let prUrl = null;
     if (!trigger.isPullRequest) {
       const prTitle = trigger.number !== void 0 ? `${trigger.title || firstLine(trigger.prompt)} (#${trigger.number})` : firstLine(trigger.prompt);
@@ -980,7 +1016,7 @@ ${truncate(
     await react("rocket");
     return 0;
   } catch (error) {
-    console.error("The commandcode run failed:", error);
+    logError("The commandcode run failed:", error);
     await comment(
       `The commandcode run failed:
 
@@ -995,7 +1031,10 @@ ${truncate(errorMessage(error), MAX_PR_VERIFY_OUTPUT)}
 main().then((code) => {
   process.exitCode = code;
 }).catch((error) => {
-  console.error("Unhandled error in commandcode-github-agent:", error);
+  console.error(
+    "Unhandled error in commandcode-github-agent:",
+    scrubSecrets(errorMessage(error), [])
+  );
   process.exitCode = 1;
 });
 export {
