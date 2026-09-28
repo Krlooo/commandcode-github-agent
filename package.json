@@ -1,0 +1,22 @@
+{
+  "name": "commandcode-github-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Run Command Code headless in GitHub Actions: /cmd in a comment -> multi-agent pipeline -> pull request",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
