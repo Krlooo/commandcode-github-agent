@@ -1,6 +1,6 @@
 # Feature: commandcode-github-agent
 
-Created: 2026-09-28 · Updated: 2026-09-29 (production review: T7/T10 closed, T11-T17 landed, T18 in progress)
+Created: 2026-09-28 · Updated: 2026-09-29 (production review: T7/T10 closed, T11-T18 landed, no open work)
 Branch: feature/mvp
 TDD: enabled (vitest) — authored checks: `npm test`, `npm run typecheck`, `npm run build`
 
@@ -191,23 +191,40 @@ verification with the app token pending.
       inherit, validated against the models the CLI reports rather than a hardcoded catalog, written as
       a custom agent file that is git-excluded and removed on every exit path — done: PR #22 (fef4f43)
       — route: dogfood (issue #20), verified by the maintainer
-- [ ] T13 Make the subagent pin take effect: steer delegation to the generated agent, but only when a
-      pin is active, so the built-in `explore` and `plan` agents keep serving delegation — issue #23,
-      in progress (dogfood)
-- [ ] T14 Bound network calls and the agent process: fetch timeouts, retries for transient API
-      failures, and a wall-clock timeout on the agent spawn so an expired run still reports — issue #24
-- [ ] T15 Trigger safety: stop firing on `issues: opened` and on any label, require the assignment to
+- [x] T13 Make the subagent pin take effect: steer delegation to the generated agent, but only when a
+      pin is active, so the built-in `explore` and `plan` agents keep serving delegation — done: PR #28
+      (8fd9ce8) — route: dogfood (issue #23), verified by the maintainer
+- [x] T14 Bound network calls and the agent process: fetch timeouts, retries for transient API
+      failures, and a wall-clock timeout on the agent spawn so an expired run still reports — done:
+      PR #29 (d022ec4) — route: dogfood (issue #24), verified by the maintainer
+- [x] T15 Trigger safety: stop firing on `issues: opened` and on any label, require the assignment to
       be this app rather than any `*[bot]`, fail on an unreadable payload, and document `concurrency`
-      in the README example — issue #25
-- [ ] T16 Repair loop: feed a failed verification back to the implementer for a bounded, configurable
-      number of attempts, resuming its own session where possible — issue #26
-- [ ] T17 Polish batch: give the reviewer the actual diff, detect files left behind by verification and
+      in the README example — done: PR #31 (87910e3), with the concurrency block applied directly in
+      bcb5e34 — route: dogfood (issue #25), verified by the maintainer
+- [x] T16 Repair loop: feed a failed verification back to the implementer for a bounded, configurable
+      number of attempts, resuming its own session where possible — done: PR #32 (4dccb3c) — route:
+      dogfood (issue #26), verified by the maintainer
+- [x] T17 Polish batch: give the reviewer the actual diff, detect files left behind by verification and
       review before `git add -A`, cap attachment downloads, align the mentions fallback with the action
-      default, and add `npm run build` to the dogfood verify command — issue #27
-- [ ] T18 Rescue artifacts: when a push is rejected, capture the commit as a patch relative to the
+      default, and add `npm run build` to the dogfood verify command — done: PR #33 (b02c2e2), with the
+      verify-command change applied directly in 6b2d810 — route: dogfood (issue #27), verified by the
+      maintainer
+- [x] T18 Rescue artifacts: when a push is rejected, capture the commit as a patch relative to the
       branch point (new files included, bounded with a truncation marker), upload it as the
       `commandcode-rescue` workflow artifact from inside the composite action, and link it from the
-      failure comment — issue #30, in progress (dogfood)
+      failure comment — done: PR #34 (8056fdc) — route: dogfood (issue #30), verified by the maintainer
+
+## Open issue: the local composite action post step
+
+One dogfood run (36560744977, issue #30) ended red after the work had already succeeded: the agent's
+step passed, the branch was pushed and the pull request was opened, but the runner's post step for the
+composite action failed with `Index was out of range`. That is `actions/runner#2816`, an open runner
+bug in the post steps of **local** composite actions, caused by a mismatch in the cached step count.
+The dogfood workflow uses `uses: ./`, which is exactly the affected shape; consumers referencing the
+action remotely are not exposed to it. Workarounds from the issue: call the action as a global
+(repository) composite action instead of a local path, or avoid `actions/checkout` inside the
+composite. Not applied here: switching the dogfood to a remote reference would stop it exercising the
+action from the working tree, which is the point of the dogfood.
 
 ## Acceptance criteria
 
