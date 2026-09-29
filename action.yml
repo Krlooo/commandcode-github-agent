@@ -92,3 +92,14 @@ runs:
         INPUT_PROVIDER_API_KEY: ${{ inputs.provider-api-key }}
         INPUT_AGENT_TOKEN: ${{ inputs.agent-token }}
         GITHUB_TOKEN: "${{ inputs.github-token != '' && inputs.github-token || github.token }}"
+    # When a push is rejected the handler writes the agent's commit as a patch to
+    # this directory (path derived from the runner temp dir). Uploaded here, from
+    # inside the action, so consumers need no extra workflow step. On a
+    # successful run the directory does not exist and this step is skipped.
+    - name: Upload the rescued work when the run failed
+      if: failure()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: commandcode-rescue
+        path: ${{ runner.temp }}/commandcode-rescue
+        if-no-files-found: ignore

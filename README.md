@@ -20,11 +20,19 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
 6. Repair: when that verification fails, the failing output is handed back to the implementer for up to `repair-attempts` bounded attempts (default one, zero disables). Each attempt resumes the implementer's own session by id when the previous result carried a usable one, or starts a fresh session with the failure in the prompt otherwise. The verification re-runs after every attempt and the loop stops as soon as it passes; an attempt that leaves the working tree unchanged stops the loop instead of retrying. This step runs only when the reviewer is enabled.
 7. Reviewer agent: a second `cmdc` session with no shared context audits the actual diff (truncated with a visible marker when very large) and the verification output, fixes gaps and writes a review summary.
 8. Re-verification: because the reviewer may have changed the tree, the `verify-command` runs again after the reviewer pass. The pull request body reports this final result and states which run it describes.
-9. Commit and push: the harness commits the working tree as `commandcode-agent[bot]` and pushes. Before staging it compares the tree with the one the implementer left and reports any files that appeared during verification or review (build output, caches, coverage) in the log and the report, so they are not committed silently. Auth is configured for the push and removed immediately after.
+9. Commit and push: the harness commits the working tree as `commandcode-agent[bot]` and pushes. Before staging it compares the tree with the one the implementer left and reports any files that appeared during verification or review (build output, caches, coverage) in the log and the report, so they are not committed silently. Auth is configured for the push and removed immediately after. If the push is rejected, the harness writes the commit as a patch to a workflow artifact and the failure comment says where to find it, so the work survives the run.
 10. Pull request: for issues it opens a PR; for pull requests it updates the branch. The body has the task, the change summary, the verification result and the review, and says how many repair attempts ran.
 11. Report comment: a final comment links the branch, the PR, the model, the agent sessions, the duration and the workflow run.
 
 If the mention asks a question or requests an explanation rather than a change, the agent replies in the thread and opens no pull request; the recent comments are part of its context, so you can keep the conversation going by mentioning it again. With a read-only token configured, it also checks whether the question was already asked or answered in another issue or pull request and points you there.
+
+## When a push fails
+
+A rejected push can happen for reasons that have nothing to do with the change: a missing app permission, a protected branch, a fork without "Allow edits by maintainers", a transient network failure, or a pre-receive hook. Without a rescue that rejection would discard the agent's commit together with the runner.
+
+When the push fails, the harness captures the commit as a patch relative to the branch point (new files included, `--binary` for binary changes), bounded with a visible truncation marker when it is very large. The composite action uploads it as the `commandcode-rescue` artifact, and the failure comment links to the artifact instead of only reporting why the push failed. The artifact holds `changes.patch`, an mbox you re-apply with `git am`, and a `README.md` naming the branch point and the exact commands to recover the work.
+
+The upload lives inside the action, so there is no extra workflow step to add. A push that succeeds is unaffected: no artifact directory is created and the upload step is skipped.
 
 ## Quick start
 
@@ -174,7 +182,7 @@ Before the agents run, the action asks the CLI for the models available to the a
 
 ## Limitations / roadmap
 
-- Fork pull requests are supported for the checkout and the push when the contributor has "Allow edits by maintainers" enabled and the token can reach the fork; otherwise the run reports the push failure in a comment.
+- Fork pull requests are supported for the checkout and the push when the contributor has "Allow edits by maintainers" enabled and the token can reach the fork; otherwise the run reports the push failure in a comment and saves the work as the `commandcode-rescue` artifact.
 - There is no live progress comment during a run. You get the reaction while it works and the final report when it finishes.
 - The GitHub App in `app/` provides the bot identity with short-lived, revocable tokens and enables workflow chaining.
 

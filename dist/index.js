@@ -756,6 +756,13 @@ async function workingTreeFingerprint(cwd) {
     await git(cwd, ["reset"]);
   }
 }
+async function revParse(cwd, ref) {
+  const output = await git(cwd, ["rev-parse", ref]);
+  return output.trim();
+}
+async function formatPatch(cwd, since) {
+  return git(cwd, ["format-patch", "--stdout", "--binary", `${since}..HEAD`]);
+}
 
 // src/prompt.ts
 var MAX_CONTEXT_COMMENTS = 30;
@@ -1287,8 +1294,136 @@ function buildReport(options) {
   lines.push(`Run: ${options.runUrl}`);
   return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
 }
+function buildPushFailureComment(options) {
+  const lines = [];
+  lines.push(`The push to \`${options.branch}\` failed, so the change is not on a branch yet.`);
+  if (options.isFork) {
+    lines.push(
+      "For fork pull requests the contributor must have 'Allow edits by maintainers' enabled, and the token must have access to the fork."
+    );
+  }
+  lines.push("");
+  lines.push("```");
+  lines.push(truncate(options.reason.trim() || "(no error message captured)", MAX_PR_VERIFY_OUTPUT));
+  lines.push("```");
+  lines.push("");
+  if (options.captured) {
+    lines.push(
+      `The agent's commit was saved as the workflow artifact \`${options.artifactName}\` before the runner ended. Download it from the Artifacts section of the run: ${options.runUrl}#artifacts`
+    );
+    lines.push(
+      `Re-apply it with \`git am ${options.patchFile}\` on the branch point; the artifact's README gives the exact commands.`
+    );
+    if (options.truncated) {
+      lines.push(
+        "The patch was larger than the artifact limit and is truncated with a visible marker at the end; the omitted part is not in the artifact."
+      );
+    }
+  } else {
+    lines.push("The change could not be captured as an artifact; it is lost with the runner.");
+  }
+  return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
+}
 function buildAnswerComment(result) {
   return truncate(summarize(result.finalText, "(the agent returned no answer)"), MAX_COMMENT_LENGTH);
+}
+
+// src/rescue.ts
+import { mkdirSync as mkdirSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { tmpdir as tmpdir2 } from "node:os";
+import { join as join3 } from "node:path";
+var RESCUE_DIR_NAME = "commandcode-rescue";
+var RESCUE_ARTIFACT_NAME = "commandcode-rescue";
+var MAX_RESCUE_PATCH_BYTES = 5e6;
+var RESCUE_PATCH_FILE = "changes.patch";
+var RESCUE_NOTES_FILE = "README.md";
+function rescueDirectory(runnerTemp) {
+  const base = runnerTemp !== void 0 && runnerTemp.length > 0 ? runnerTemp : tmpdir2();
+  return join3(base, RESCUE_DIR_NAME);
+}
+function rescuePatchPath(directory) {
+  return join3(directory, RESCUE_PATCH_FILE);
+}
+function rescueNotesPath(directory) {
+  return join3(directory, RESCUE_NOTES_FILE);
+}
+function truncatePatch(patch, maxBytes = MAX_RESCUE_PATCH_BYTES) {
+  const total = Buffer.byteLength(patch, "utf8");
+  if (total <= maxBytes) return patch;
+  const kept = Buffer.from(patch, "utf8").subarray(0, maxBytes).toString("utf8");
+  return `${kept}
+
+# ...(patch truncated: kept ${maxBytes} of ${total} bytes)
+`;
+}
+function buildRescueNotes(options) {
+  const lines = [];
+  lines.push("# Command Code rescue artifact");
+  lines.push("");
+  lines.push(
+    "The agent finished its work, but the push back to GitHub was rejected, so the"
+  );
+  lines.push(
+    "change never reached a branch and would have been lost with the runner. This"
+  );
+  lines.push("artifact holds the commit as a patch you can apply by hand.");
+  lines.push("");
+  lines.push("## What was captured");
+  lines.push("");
+  lines.push(`- Branch the push targeted: \`${options.branch}\``);
+  lines.push(`- Commit: \`${options.headSha}\``);
+  lines.push(`- Branch point (the commit's parent): \`${options.baseSha}\``);
+  lines.push(`- Push remote: \`${options.remote}\``);
+  if (options.isFork) {
+    lines.push("- The push targeted a fork pull request branch.");
+  }
+  lines.push("");
+  lines.push("## How to re-apply");
+  lines.push("");
+  lines.push("Check out the branch point and apply the patch:");
+  lines.push("");
+  lines.push("```sh");
+  lines.push(`git fetch ${options.remote}`);
+  lines.push(`git checkout ${options.baseSha}`);
+  lines.push("git checkout -b commandcode-rescue");
+  lines.push(`git am ${RESCUE_PATCH_FILE}`);
+  lines.push("```");
+  lines.push("");
+  if (options.truncated) {
+    lines.push(
+      "The patch was larger than the artifact limit and is truncated with a marker at"
+    );
+    lines.push("the end; the omitted part of the change is not in this artifact.");
+    lines.push("");
+  }
+  lines.push("## Why the push failed");
+  lines.push("");
+  lines.push("```");
+  lines.push(options.reason.trim() || "(no error message captured)");
+  lines.push("```");
+  return lines.join("\n");
+}
+async function captureRescue(options) {
+  mkdirSync2(options.directory, { recursive: true });
+  const baseSha = options.baseSha.length > 0 ? options.baseSha : await revParse(options.workspace, "HEAD^");
+  const patch = await formatPatch(options.workspace, baseSha);
+  const truncated = Buffer.byteLength(patch, "utf8") > MAX_RESCUE_PATCH_BYTES;
+  const patchPath = rescuePatchPath(options.directory);
+  writeFileSync2(patchPath, truncatePatch(patch), "utf8");
+  writeFileSync2(
+    rescueNotesPath(options.directory),
+    buildRescueNotes({
+      branch: options.branch,
+      baseSha,
+      headSha: await revParse(options.workspace, "HEAD"),
+      remote: options.remote,
+      isFork: options.isFork,
+      reason: options.reason,
+      truncated
+    }),
+    "utf8"
+  );
+  return { directory: options.directory, patchPath, truncated };
 }
 
 // src/scrub.ts
@@ -1306,13 +1441,13 @@ function scrubSecrets(text, secrets) {
 }
 
 // src/subagent.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname, join as join3 } from "node:path";
+import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname, join as join4 } from "node:path";
 var SUBAGENT_AGENT_NAME = "commandcode-subagent";
 var SUBAGENT_AGENT_PATH = `.commandcode/agents/${SUBAGENT_AGENT_NAME}.md`;
 var REPOSITORY_MODEL_FILE = ".commandcode/subagent-model";
 function readRepositoryModel(workspace) {
-  const file = join3(workspace, REPOSITORY_MODEL_FILE);
+  const file = join4(workspace, REPOSITORY_MODEL_FILE);
   if (!existsSync2(file)) return void 0;
   try {
     const value = readFileSync2(file, "utf8").split(/\r?\n/).map((line) => line.replace(/#.*$/, "").trim()).find((line) => line.length > 0);
@@ -1345,9 +1480,9 @@ function agentFileContents(model) {
   ].join("\n");
 }
 function addGitExclude(workspace, relativePath) {
-  const infoDir = join3(workspace, ".git", "info");
+  const infoDir = join4(workspace, ".git", "info");
   if (!existsSync2(infoDir)) return false;
-  const file = join3(infoDir, "exclude");
+  const file = join4(infoDir, "exclude");
   const entry = `/${relativePath}`;
   let content = "";
   try {
@@ -1358,7 +1493,7 @@ function addGitExclude(workspace, relativePath) {
   if (content.split(/\r?\n/).some((line) => line.trim() === entry)) return false;
   const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
   try {
-    writeFileSync2(file, `${content}${separator}${entry}
+    writeFileSync3(file, `${content}${separator}${entry}
 `, "utf8");
   } catch {
     return false;
@@ -1367,12 +1502,12 @@ function addGitExclude(workspace, relativePath) {
 }
 function removeGitExclude(workspace, relativePath, added) {
   if (!added) return;
-  const file = join3(workspace, ".git", "info", "exclude");
+  const file = join4(workspace, ".git", "info", "exclude");
   const entry = `/${relativePath}`;
   try {
     const content = readFileSync2(file, "utf8");
     const next = content.split(/\r?\n/).filter((line) => line.trim() !== entry).join("\n");
-    writeFileSync2(file, next, "utf8");
+    writeFileSync3(file, next, "utf8");
   } catch {
   }
 }
@@ -1402,7 +1537,7 @@ async function configureSubagentModel(options) {
     warn(warning);
     return { warning, cleanup: noop };
   }
-  const filePath = join3(options.workspace, SUBAGENT_AGENT_PATH);
+  const filePath = join4(options.workspace, SUBAGENT_AGENT_PATH);
   if (existsSync2(filePath)) {
     const warning = `An agent file already exists at ${SUBAGENT_AGENT_PATH}; leaving it untouched instead of overwriting it.`;
     warn(warning);
@@ -1410,8 +1545,8 @@ async function configureSubagentModel(options) {
   }
   const excluded = addGitExclude(options.workspace, SUBAGENT_AGENT_PATH);
   try {
-    mkdirSync2(dirname(filePath), { recursive: true });
-    writeFileSync2(filePath, agentFileContents(model), "utf8");
+    mkdirSync3(dirname(filePath), { recursive: true });
+    writeFileSync3(filePath, agentFileContents(model), "utf8");
   } catch (error) {
     removeGitExclude(options.workspace, SUBAGENT_AGENT_PATH, excluded);
     const warning = `Could not write the subagent agent file (${error instanceof Error ? error.message : String(error)}); subagents inherit the session model instead.`;
@@ -1682,6 +1817,12 @@ async function main() {
         return 1;
       }
     }
+    let baseSha = "";
+    try {
+      baseSha = await revParse(workspace, "HEAD");
+    } catch (error) {
+      console.warn("Could not record the branch point for a possible rescue artifact:", error);
+    }
     await unsetAuth(workspace);
     let envOverrides = {};
     try {
@@ -1878,19 +2019,44 @@ ${truncate(
     )}`;
     await commit(workspace, commitMessage);
     await configureAuth(workspace, token);
+    let pushError;
     try {
       await push(workspace, isFork ? forkUrl : void 0, branch);
     } catch (error) {
-      if (isFork) {
-        await comment(
-          "The push to the fork branch failed. For fork pull requests the contributor must have 'Allow edits by maintainers' enabled, and the token must have access to the fork. " + errorMessage(error)
-        );
-        await react("-1");
-        return 1;
-      }
-      throw error;
+      pushError = error;
     } finally {
       await unsetAuth(workspace);
+    }
+    if (pushError !== void 0) {
+      const reason = scrubSecrets(errorMessage(pushError), secrets);
+      let rescue = null;
+      try {
+        rescue = await captureRescue({
+          workspace,
+          directory: rescueDirectory(env("RUNNER_TEMP")),
+          branch,
+          baseSha,
+          remote: isFork ? forkUrl ?? "origin" : "origin",
+          isFork,
+          reason
+        });
+      } catch (error) {
+        logError("Could not capture the rejected push as a rescue artifact:", error);
+      }
+      await comment(
+        buildPushFailureComment({
+          branch,
+          isFork,
+          reason,
+          artifactName: RESCUE_ARTIFACT_NAME,
+          runUrl,
+          captured: rescue !== null,
+          truncated: rescue?.truncated ?? false,
+          patchFile: RESCUE_PATCH_FILE
+        })
+      );
+      await react("-1");
+      return 1;
     }
     let prUrl = null;
     if (!trigger.isPullRequest) {

@@ -160,3 +160,18 @@ export async function currentBranch(cwd: string): Promise<string> {
   const output = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   return output.trim();
 }
+
+/** Resolves a ref to its full object name. Used to record the branch point. */
+export async function revParse(cwd: string, ref: string): Promise<string> {
+  const output = await git(cwd, ["rev-parse", ref]);
+  return output.trim();
+}
+
+/**
+ * The patch of every commit between `since` (exclusive) and HEAD, as an mbox
+ * re-appliable with `git am`. `--binary` keeps binary changes; new files are
+ * included. Used only on the rescue path, when a push is rejected.
+ */
+export async function formatPatch(cwd: string, since: string): Promise<string> {
+  return git(cwd, ["format-patch", "--stdout", "--binary", `${since}..HEAD`]);
+}

@@ -189,6 +189,61 @@ export function buildReport(options: ReportOptions): string {
   return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
 }
 
+export interface PushFailureOptions {
+  /** The branch the push targeted. */
+  branch: string;
+  /** True when the push targeted a fork pull request branch. */
+  isFork: boolean;
+  /** The scrubbed push error message. */
+  reason: string;
+  /** Name of the workflow artifact holding the rescued patch. */
+  artifactName: string;
+  /** Workflow run URL; the artifact lives in its Artifacts section. */
+  runUrl: string;
+  /** True when the patch was written and will be uploaded. */
+  captured: boolean;
+  /** True when the captured patch was too large and is truncated. */
+  truncated: boolean;
+  /** Patch file name inside the artifact, for the `git am` hint. */
+  patchFile: string;
+}
+
+/**
+ * The comment posted when a push is rejected. It states why the push failed and,
+ * instead of stopping there, points at the workflow artifact that holds the
+ * rescued work so nothing is silently discarded.
+ */
+export function buildPushFailureComment(options: PushFailureOptions): string {
+  const lines: string[] = [];
+  lines.push(`The push to \`${options.branch}\` failed, so the change is not on a branch yet.`);
+  if (options.isFork) {
+    lines.push(
+      "For fork pull requests the contributor must have 'Allow edits by maintainers' enabled, and the token must have access to the fork.",
+    );
+  }
+  lines.push("");
+  lines.push("```");
+  lines.push(truncate(options.reason.trim() || "(no error message captured)", MAX_PR_VERIFY_OUTPUT));
+  lines.push("```");
+  lines.push("");
+  if (options.captured) {
+    lines.push(
+      `The agent's commit was saved as the workflow artifact \`${options.artifactName}\` before the runner ended. Download it from the Artifacts section of the run: ${options.runUrl}#artifacts`,
+    );
+    lines.push(
+      `Re-apply it with \`git am ${options.patchFile}\` on the branch point; the artifact's README gives the exact commands.`,
+    );
+    if (options.truncated) {
+      lines.push(
+        "The patch was larger than the artifact limit and is truncated with a visible marker at the end; the omitted part is not in the artifact.",
+      );
+    }
+  } else {
+    lines.push("The change could not be captured as an artifact; it is lost with the runner.");
+  }
+  return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
+}
+
 /**
  * The comment for a conversation turn: the agent's answer on its own.
  * Used when the task was a question and no files were changed.

@@ -1,6 +1,6 @@
 # Feature: commandcode-github-agent
 
-Created: 2026-09-28 · Updated: 2026-09-29 (production review: T7/T10 closed, T11-T12 landed, T13-T17 open)
+Created: 2026-09-28 · Updated: 2026-09-29 (production review: T7/T10 closed, T11-T17 landed, T18 in progress)
 Branch: feature/mvp
 TDD: enabled (vitest) — authored checks: `npm test`, `npm run typecheck`, `npm run build`
 
@@ -204,6 +204,10 @@ verification with the app token pending.
 - [ ] T17 Polish batch: give the reviewer the actual diff, detect files left behind by verification and
       review before `git add -A`, cap attachment downloads, align the mentions fallback with the action
       default, and add `npm run build` to the dogfood verify command — issue #27
+- [ ] T18 Rescue artifacts: when a push is rejected, capture the commit as a patch relative to the
+      branch point (new files included, bounded with a truncation marker), upload it as the
+      `commandcode-rescue` workflow artifact from inside the composite action, and link it from the
+      failure comment — issue #30, in progress (dogfood)
 
 ## Acceptance criteria
 
