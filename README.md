@@ -8,18 +8,19 @@ A run follows the same pipeline every time:
 
 ```
 trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verification command
-   ->  reviewer agent  ->  commit / push  ->  pull request  ->  report comment
+   ->  reviewer agent  ->  verification command (re-run)  ->  commit / push  ->  pull request  ->  report comment
 ```
 
 1. Trigger: an `@commandcode-agent` comment (on an issue, a pull request or a pull request review), an issue assigned to the app, or a manual `workflow_dispatch`. Images pasted into the triggering comment are downloaded and handed to the agent. The triggering comment gets a 👀 reaction while the run is in progress, replaced with 🚀 on success or 👎 on failure.
 2. Permission gate: the actor must have `write` or `admin` access to the repository. Anyone else gets an explanatory comment and the run stops. Events authored by a bot are ignored.
 3. Branch: for an issue the agent creates `commandcode/issue-<n>-<timestamp>` from the default branch. For a pull request it checks out the PR head branch and pushes back to it.
-4. Implementer agent: `cmdc` runs headless (`-p ... --yolo --output-format json --max-turns ...`) with the task, the sanitized issue/PR context and a set of rules. It edits the working tree.
-5. Verification command: the `verify-command` runs in the workspace and its output is kept for the reviewer and the pull request body.
+4. Implementer agent: `cmdc` runs headless (`-p ... --yolo --output-format json --max-turns ...`) with the task, the sanitized issue/PR context and a set of rules. It edits the working tree. The write token is removed from the local git config before this point.
+5. Verification command: the `verify-command` runs in the workspace with a restricted environment (no GitHub, Actions or provider tokens, the same allowlist the agent gets) and its output is kept for the reviewer.
 6. Reviewer agent: a second `cmdc` session with no shared context audits the diff and the verification output, fixes gaps and writes a review summary.
-7. Commit and push: the harness commits the working tree as `commandcode-agent[bot]` and pushes.
-8. Pull request: for issues it opens a PR; for pull requests it updates the branch. The body has the task, the change summary, the verification result and the review.
-9. Report comment: a final comment links the branch, the PR, the model, the agent sessions, the duration and the workflow run.
+7. Re-verification: because the reviewer may have changed the tree, the `verify-command` runs again after the reviewer pass. The pull request body reports this final result and states which run it describes.
+8. Commit and push: the harness commits the working tree as `commandcode-agent[bot]` and pushes. Auth is configured for the push and removed immediately after.
+9. Pull request: for issues it opens a PR; for pull requests it updates the branch. The body has the task, the change summary, the verification result and the review.
+10. Report comment: a final comment links the branch, the PR, the model, the agent sessions, the duration and the workflow run.
 
 If the mention asks a question or requests an explanation rather than a change, the agent replies in the thread and opens no pull request; the recent comments are part of its context, so you can keep the conversation going by mentioning it again. With a read-only token configured, it also checks whether the question was already asked or answered in another issue or pull request and points you there.
 
@@ -47,7 +48,7 @@ permissions:
 | `mentions` | `@commandcode-agent` | Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent. |
 | `model` | none | Model identifier passed to the Command Code CLI (`-m`). Required when `provider-api-key` is set. |
 | `max-turns` | `100` | Maximum number of agent turns per agent run (implementer and reviewer). |
-| `verify-command` | none | Command run after the implementer agent to verify the change (e.g. `npm ci && npm test`). |
+| `verify-command` | none | Command run to verify the change (e.g. `npm ci && npm test`); runs after the implementer agent and again after the reviewer pass. |
 | `review` | `true` | Run the reviewer agent pass after verification (`true`/`false`). |
 | `command-code-api-key` | none | Command Code API key (https://commandcode.ai/settings/keys), exported to the CLI as `COMMAND_CODE_API_KEY`. The recommended CI path; it takes precedence over the BYOK provider inputs. The same key works for the Provider API. |
 | `provider` | none | BYOK provider id written to `~/.commandcode/providers.json` (e.g. `openrouter`). |
@@ -81,6 +82,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Required. By default actions/checkout persists the write token as an
+          # http.extraheader credential in the local .git/config. The agent runs
+          # with --yolo, so a prompt injection could read and exfiltrate it. With
+          # this false, the action configures its own auth header only around the
+          # push and removes it before any agent session runs.
+          persist-credentials: false
 
       - uses: <owner>/commandcode-github-agent@main
         with:
@@ -117,6 +124,8 @@ When `provider-api-key` is set, the action writes `~/.commandcode/providers.json
 - Bot loop guard: events whose actor ends in `[bot]` are ignored, so the agent cannot trigger itself in a loop.
 - Prompt-injection sanitization: issue and PR text is stripped of HTML comments, zero-width and bidi control characters before it reaches a prompt, and the remaining context is marked as information only.
 - Scoped token: the action uses the `github-token` you pass, which defaults to the workflow token limited to the job's `permissions`. With the optional GitHub App setup (`app/`, `actions/create-github-app-token`), the agent acts as a bot with a short-lived installation token. The write token never enters the agent's environment; if you pass `agent-token`, that separate token is read-only.
+- Git config: the write token is removed from the local `.git/config` before any agent session runs, and re-added only for the push, as described above. Set `persist-credentials: false` on `actions/checkout` so the token is not persisted there in the first place.
+- Restricted verification: the `verify-command` runs with the same least-privilege environment as the agent, so the project's test and build commands (code the agent just wrote) cannot read `GITHUB_TOKEN`, the Command Code key or the provider keys.
 - Token pushes: commits pushed with the plain `GITHUB_TOKEN` do not trigger other workflows, which is a GitHub platform behavior. Using the app token lifts that; the dogfood workflow in this repository does it.
 
 ## Limitations / roadmap

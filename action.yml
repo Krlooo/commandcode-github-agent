@@ -19,7 +19,7 @@ inputs:
     required: false
     default: "100"
   verify-command:
-    description: 'Command run after the implementer agent to verify the change (e.g. "npm ci && npm test").'
+    description: 'Command run to verify the change (e.g. "npm ci && npm test"); runs after the implementer agent and again after the reviewer pass.'
     required: false
   review:
     description: "Run the reviewer agent pass after verification (true/false)."
