@@ -55,12 +55,20 @@ jobs:
       # The app token replaces the workflow GITHUB_TOKEN for the agent: comments,
       # reactions and pushes carry the commandcode-agent[bot] identity, and -
       # unlike GITHUB_TOKEN - PRs opened with it DO trigger other workflows (CI).
+      # The permissions are requested explicitly so a missing one fails here, in
+      # seconds and by name, instead of surfacing as a rejected push once the
+      # agent has already done the work. `workflows` is needed whenever a task
+      # changes a file under .github/workflows/.
       - name: Create the app token
         id: app-token
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
         with:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
 
       # A second, read-only token handed to the agent so it can consult other
       # issues and pull requests with the gh CLI. The write token stays here.
@@ -79,7 +87,9 @@ jobs:
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           agent-token: ${{ steps.agent-token.outputs.token }}
-          verify-command: "npm ci && npm test && npm run typecheck"
+          # `npm run build` is included so a stale committed bundle is caught by
+          # the agent's own verification rather than later by CI.
+          verify-command: "npm ci && npm test && npm run typecheck && npm run build"
           # Command Code API key from https://commandcode.ai/settings/keys, stored as
           # the AGENT_API_KEY secret. This is the documented CI auth path: the CLI
           # reads COMMAND_CODE_API_KEY at startup; no login is required.
