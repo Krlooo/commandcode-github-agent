@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentResult } from "../src/agent";
 import {
   buildPullRequestBody,
+  buildPushFailureComment,
   buildReport,
   repairSummary,
   truncate,
@@ -163,5 +164,45 @@ describe("truncate", () => {
     const result = truncate("a".repeat(20), 5);
     expect(result.startsWith("aaaaa")).toBe(true);
     expect(result).toContain("...(truncated 15 characters)");
+  });
+});
+
+function pushFailure(overrides: Partial<Parameters<typeof buildPushFailureComment>[0]> = {}): string {
+  return buildPushFailureComment({
+    branch: "commandcode/issue-25-1790669535",
+    isFork: false,
+    reason: "remote rejected: refusing to allow a GitHub App to create ... without workflows permission",
+    artifactName: "commandcode-rescue",
+    runUrl: "https://github.com/carlos/repo/actions/runs/36541197573",
+    captured: true,
+    truncated: false,
+    patchFile: "changes.patch",
+    ...overrides,
+  });
+}
+
+describe("buildPushFailureComment", () => {
+  it("says why the push failed and where the work went", () => {
+    const text = pushFailure();
+    expect(text).toContain("The push to `commandcode/issue-25-1790669535` failed");
+    expect(text).toContain("without workflows permission");
+    expect(text).toContain("the workflow artifact `commandcode-rescue`");
+    expect(text).toContain("https://github.com/carlos/repo/actions/runs/36541197573#artifacts");
+    expect(text).toContain("git am changes.patch");
+  });
+
+  it("warns when the captured patch was truncated", () => {
+    expect(pushFailure({ truncated: true })).toContain("truncated with a visible marker");
+  });
+
+  it("is honest when the work could not be captured", () => {
+    const text = pushFailure({ captured: false });
+    expect(text).toContain("could not be captured");
+    expect(text).not.toContain("workflow artifact");
+  });
+
+  it("keeps the fork guidance on the fork path", () => {
+    expect(pushFailure({ isFork: true })).toContain("Allow edits by maintainers");
+    expect(pushFailure()).not.toContain("Allow edits by maintainers");
   });
 });

@@ -29,12 +29,20 @@ import { parseRepairAttempts, runRepairLoop, type RepairReport } from "./repair"
 import {
   buildAnswerComment,
   buildPullRequestBody,
+  buildPushFailureComment,
   buildReport,
   MAX_COMMENT_LENGTH,
   MAX_PR_VERIFY_OUTPUT,
   summarize,
   truncate,
 } from "./report";
+import {
+  captureRescue,
+  RESCUE_ARTIFACT_NAME,
+  RESCUE_PATCH_FILE,
+  rescueDirectory,
+  type RescueResult,
+} from "./rescue";
 import { collectSecrets, scrubSecrets } from "./scrub";
 import {
   configureSubagentModel,
@@ -314,6 +322,16 @@ export async function main(): Promise<number> {
       }
     }
 
+    // The commit the branch was carved from. A rescue patch is taken against it
+    // if the push is later rejected; recording it here never changes the git
+    // state a successful run leaves behind.
+    let baseSha = "";
+    try {
+      baseSha = await git.revParse(workspace, "HEAD");
+    } catch (error) {
+      console.warn("Could not record the branch point for a possible rescue artifact:", error);
+    }
+
     // Keep the write token out of `.git/config` while an agent session runs:
     // `actions/checkout` persists an `extraheader` credential by default, and
     // the implementer and reviewer run with `--yolo`, so a prompt injection
@@ -575,20 +593,49 @@ export async function main(): Promise<number> {
     await git.commit(workspace, commitMessage);
 
     await git.configureAuth(workspace, token);
+    let pushError: unknown;
     try {
       await git.push(workspace, isFork ? forkUrl : undefined, branch);
     } catch (error) {
-      if (isFork) {
-        await comment(
-          "The push to the fork branch failed. For fork pull requests the contributor must have 'Allow edits by maintainers' enabled, and the token must have access to the fork. " +
-            errorMessage(error),
-        );
-        await react("-1");
-        return 1;
-      }
-      throw error;
+      pushError = error;
     } finally {
       await git.unsetAuth(workspace);
+    }
+
+    // A rejected push would otherwise take the only copy of the work with the
+    // runner. Capture the commit as a patch the composite action uploads as an
+    // artifact, then point the failure comment at it. Success never reaches this
+    // block, so the happy path is unchanged.
+    if (pushError !== undefined) {
+      const reason = scrubSecrets(errorMessage(pushError), secrets);
+      let rescue: RescueResult | null = null;
+      try {
+        rescue = await captureRescue({
+          workspace,
+          directory: rescueDirectory(env("RUNNER_TEMP")),
+          branch,
+          baseSha,
+          remote: isFork ? (forkUrl ?? "origin") : "origin",
+          isFork,
+          reason,
+        });
+      } catch (error) {
+        logError("Could not capture the rejected push as a rescue artifact:", error);
+      }
+      await comment(
+        buildPushFailureComment({
+          branch,
+          isFork,
+          reason,
+          artifactName: RESCUE_ARTIFACT_NAME,
+          runUrl,
+          captured: rescue !== null,
+          truncated: rescue?.truncated ?? false,
+          patchFile: RESCUE_PATCH_FILE,
+        }),
+      );
+      await react("-1");
+      return 1;
     }
 
     // 11) + 12) Open a PR for issues; the push already updated the PR branch otherwise.
