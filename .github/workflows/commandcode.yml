@@ -17,9 +17,15 @@ on:
 permissions:
   contents: read
 
+# One run at a time per repository. Every run rebuilds the committed bundle, so
+# two runs started from different issues both touch dist/index.js and their pull
+# requests conflict by the time they meet. `queue: max` raises the pending queue
+# from GitHub's default of a single run to 100, so queued runs wait their turn
+# instead of silently cancelling each other.
 concurrency:
-  group: commandcode-${{ github.event.issue.number || github.run_id }}
+  group: commandcode-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   commandcode:

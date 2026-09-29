@@ -75,6 +75,14 @@ permissions:
   pull-requests: write
   issues: write
 
+# One run at a time per repository. Keep the same `group` in every workflow that
+# calls this action: concurrency groups are repository-wide, so a different or
+# missing group lets the runs race again.
+concurrency:
+  group: commandcode-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   commandcode:
     runs-on: ubuntu-latest
@@ -98,6 +106,16 @@ jobs:
 ```
 
 For the BYOK alternative, replace `command-code-api-key` with `provider`, `provider-base-url` and `provider-api-key` (see [Auth](#auth)).
+
+### Concurrency
+
+Keep the `concurrency` block. Every run rebuilds `dist/index.js`, the committed bundle the action executes, so two runs started from different issues both change that file and their pull requests conflict by the time they meet.
+
+Keying the group on `github.repository` serializes runs across the whole repository. `cancel-in-progress: false` keeps a queued run from being cancelled mid-flight, after it may already have spent tokens and pushed a branch, and `queue: max` raises the pending queue from GitHub's default of a single run to 100. Without `queue: max`, a burst of mentions leaves only the most recent run pending and cancels the rest, which is the opposite of queueing.
+
+Two things worth knowing about the group. It is repository-wide rather than per workflow, so if you call this action from more than one workflow, give each one the identical `group` value; with a different or missing group the runs stop queueing and the conflicts come back. And `queue: max` has a ceiling of its own: once 100 runs are pending, GitHub cancels any further ones.
+
+This serializes the repository on purpose, and it costs throughput. With several maintainers triggering the agent, each run waits for the one before it. If you would rather accept conflicts than wait, key the group per issue instead, for example `commandcode-${{ github.event.issue.number || github.run_id }}`.
 
 ## Auth
 
