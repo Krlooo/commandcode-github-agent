@@ -1,7 +1,5 @@
 // src/index.ts
-import { execFile as execFile2 } from "node:child_process";
 import { readFileSync as readFileSync3 } from "node:fs";
-import { promisify as promisify2 } from "node:util";
 
 // src/agent.ts
 import { spawn } from "node:child_process";
@@ -830,6 +828,83 @@ var GitHubClient = class {
   }
 };
 
+// src/report.ts
+var MAX_COMMENT_LENGTH = 6e4;
+var MAX_PR_VERIFY_OUTPUT = 4e3;
+function truncate(text, max) {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}
+
+...(truncated ${text.length - max} characters)`;
+}
+function summarize(text, fallback) {
+  const trimmed = text.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+function formatDuration(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1e3));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s`;
+}
+function verificationPhase(options) {
+  if (options.verifyAfterReview) {
+    return "This result is from the verification re-run after the reviewer pass.";
+  }
+  if (options.reviewer) {
+    return "This result is from the verification run before the reviewer pass; it does not reflect the reviewer's edits.";
+  }
+  return "This result is from the verification run.";
+}
+function buildPullRequestBody(options) {
+  const sections = [];
+  sections.push("## Task");
+  sections.push(options.task.trim() || "(no task text provided)");
+  sections.push("## What changed");
+  sections.push(summarize(options.implementer.finalText, "(the implementer returned no summary)"));
+  sections.push("## Verification");
+  if (options.verifyCommand) {
+    sections.push(`Command: \`${options.verifyCommand}\``);
+    sections.push(`Result: ${options.verifyFailed ? "failed" : "passed"}`);
+    sections.push(verificationPhase(options));
+    sections.push("```");
+    sections.push(
+      truncate(summarize(options.verifyOutput ?? "", "(no output captured)"), MAX_PR_VERIFY_OUTPUT)
+    );
+    sections.push("```");
+  } else {
+    sections.push("not configured");
+  }
+  sections.push("## Review");
+  if (options.reviewer) {
+    sections.push(
+      options.reviewer.subtype === "error" ? `The reviewer agent failed: ${options.reviewer.error ?? "unknown error"}` : summarize(options.reviewer.finalText, "(the reviewer returned no summary)")
+    );
+  } else {
+    sections.push("disabled");
+  }
+  if (options.number !== void 0) sections.push(`Closes #${options.number}`);
+  return truncate(sections.join("\n\n"), MAX_COMMENT_LENGTH);
+}
+function buildReport(options) {
+  const lines = [];
+  lines.push(`Command Code finished the task on branch \`${options.branch}\`.`);
+  if (options.prUrl) lines.push(`Pull request: ${options.prUrl}`);
+  else if (options.isPullRequest) lines.push("Changes were pushed to the pull request branch.");
+  lines.push(`Model: ${options.model || "(default)"}`);
+  if (options.subagentModelNote) lines.push(options.subagentModelNote);
+  const sessions = [];
+  if (options.implementer.sessionId) sessions.push(`implementer ${options.implementer.sessionId}`);
+  if (options.reviewer?.sessionId) sessions.push(`reviewer ${options.reviewer.sessionId}`);
+  if (sessions.length > 0) lines.push(`Sessions: ${sessions.join(", ")}`);
+  lines.push(`Duration: ${formatDuration(Date.now() - options.startedAt)}`);
+  lines.push(`Run: ${options.runUrl}`);
+  return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
+}
+function buildAnswerComment(result) {
+  return truncate(summarize(result.finalText, "(the agent returned no answer)"), MAX_COMMENT_LENGTH);
+}
+
 // src/scrub.ts
 var ACCESS_TOKEN_URL = /x-access-token:[^@\s]+@/g;
 function collectSecrets(values) {
@@ -967,21 +1042,46 @@ async function configureSubagentModel(options) {
   return { model, filePath, cleanup };
 }
 
-// src/index.ts
+// src/verify.ts
+import { execFile as execFile2 } from "node:child_process";
+import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
-var MAX_COMMENT_LENGTH = 6e4;
-var MAX_VERIFY_OUTPUT = 2e4;
-var MAX_PR_VERIFY_OUTPUT = 4e3;
 var MAX_SHELL_BUFFER = 64 * 1024 * 1024;
+function verificationEnv(source) {
+  return agentEnv(source, {});
+}
+function shellInvocation(command) {
+  if (process.platform === "win32") {
+    return { file: process.env["ComSpec"] ?? "cmd.exe", args: ["/d", "/s", "/c", command] };
+  }
+  return { file: "/bin/sh", args: ["-c", command] };
+}
+async function runVerification(cwd, command, source = process.env) {
+  const { file, args } = shellInvocation(command);
+  const env2 = verificationEnv(source);
+  try {
+    const { stdout, stderr } = await execFileAsync2(file, args, {
+      cwd,
+      env: env2,
+      maxBuffer: MAX_SHELL_BUFFER
+    });
+    return { output: [stdout, stderr].filter((part) => part.length > 0).join("\n"), exitCode: 0 };
+  } catch (error) {
+    const failure = error;
+    const stdout = typeof failure.stdout === "string" ? failure.stdout : "";
+    const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
+    const message = typeof failure.message === "string" ? failure.message : "";
+    const output = [stdout, stderr, message].filter((part) => part.length > 0).join("\n");
+    const exitCode = typeof failure.code === "number" ? failure.code : 1;
+    return { output, exitCode };
+  }
+}
+
+// src/index.ts
+var MAX_VERIFY_OUTPUT = 2e4;
 function env(name, fallback = "") {
   const value = process.env[name];
   return value === void 0 || value.length === 0 ? fallback : value;
-}
-function truncate(text, max) {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}
-
-...(truncated ${text.length - max} characters)`;
 }
 function errorMessage(error) {
   if (error instanceof Error) return error.message;
@@ -996,87 +1096,9 @@ function parseMentions(value) {
   const mentions = value.split(",").map((mention) => mention.trim()).filter((mention) => mention.length > 0);
   return mentions.length > 0 ? mentions : ["@commandcode-agent"];
 }
-function formatDuration(ms) {
-  const seconds = Math.max(0, Math.round(ms / 1e3));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${seconds % 60}s`;
-}
 function firstLine(text) {
   const line = text.split(/\r?\n/).map((part) => part.trim()).find((part) => part.length > 0);
   return line ?? "commandcode agent changes";
-}
-function shellInvocation(command) {
-  if (process.platform === "win32") {
-    return { file: process.env["ComSpec"] ?? "cmd.exe", args: ["/d", "/s", "/c", command] };
-  }
-  return { file: "/bin/sh", args: ["-c", command] };
-}
-async function runCommand(cwd, command) {
-  const { file, args } = shellInvocation(command);
-  try {
-    const { stdout, stderr } = await execFileAsync2(file, args, { cwd, maxBuffer: MAX_SHELL_BUFFER });
-    return { output: [stdout, stderr].filter((part) => part.length > 0).join("\n"), exitCode: 0 };
-  } catch (error) {
-    const failure = error;
-    const stdout = typeof failure.stdout === "string" ? failure.stdout : "";
-    const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
-    const message = typeof failure.message === "string" ? failure.message : "";
-    const output = [stdout, stderr, message].filter((part) => part.length > 0).join("\n");
-    const exitCode = typeof failure.code === "number" ? failure.code : 1;
-    return { output, exitCode };
-  }
-}
-function summarize(text, fallback) {
-  const trimmed = text.trim();
-  return trimmed.length > 0 ? trimmed : fallback;
-}
-function buildPullRequestBody(options) {
-  const sections = [];
-  sections.push("## Task");
-  sections.push(options.task.trim() || "(no task text provided)");
-  sections.push("## What changed");
-  sections.push(summarize(options.implementer.finalText, "(the implementer returned no summary)"));
-  sections.push("## Verification");
-  if (options.verifyCommand) {
-    sections.push(`Command: \`${options.verifyCommand}\``);
-    sections.push(`Result: ${options.verifyFailed ? "failed" : "passed"}`);
-    sections.push("```");
-    sections.push(
-      truncate(summarize(options.verifyOutput ?? "", "(no output captured)"), MAX_PR_VERIFY_OUTPUT)
-    );
-    sections.push("```");
-  } else {
-    sections.push("not configured");
-  }
-  sections.push("## Review");
-  if (options.reviewer) {
-    sections.push(
-      options.reviewer.subtype === "error" ? `The reviewer agent failed: ${options.reviewer.error ?? "unknown error"}` : summarize(options.reviewer.finalText, "(the reviewer returned no summary)")
-    );
-  } else {
-    sections.push("disabled");
-  }
-  if (options.number !== void 0) sections.push(`Closes #${options.number}`);
-  return truncate(sections.join("\n\n"), MAX_COMMENT_LENGTH);
-}
-function buildReport(options) {
-  const lines = [];
-  lines.push(`Command Code finished the task on branch \`${options.branch}\`.`);
-  if (options.prUrl) lines.push(`Pull request: ${options.prUrl}`);
-  else if (options.isPullRequest) lines.push("Changes were pushed to the pull request branch.");
-  lines.push(`Model: ${options.model || "(default)"}`);
-  if (options.subagentModelNote) lines.push(options.subagentModelNote);
-  const sessions = [];
-  if (options.implementer.sessionId) sessions.push(`implementer ${options.implementer.sessionId}`);
-  if (options.reviewer?.sessionId) sessions.push(`reviewer ${options.reviewer.sessionId}`);
-  if (sessions.length > 0) lines.push(`Sessions: ${sessions.join(", ")}`);
-  lines.push(`Duration: ${formatDuration(Date.now() - options.startedAt)}`);
-  lines.push(`Run: ${options.runUrl}`);
-  return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
-}
-function buildAnswerComment(result) {
-  return truncate(summarize(result.finalText, "(the agent returned no answer)"), MAX_COMMENT_LENGTH);
 }
 async function safeDefaultBranch(github) {
   try {
@@ -1254,6 +1276,7 @@ async function main() {
         return 1;
       }
     }
+    await unsetAuth(workspace);
     let envOverrides = {};
     try {
       const auth = await setupAgentAuth(
@@ -1328,7 +1351,7 @@ async function main() {
     let verifyFailed = false;
     if (verifyCommand) {
       console.log(`Running verification command: ${verifyCommand}`);
-      const verification = await runCommand(workspace, verifyCommand);
+      const verification = await runVerification(workspace, verifyCommand);
       verifyOutput = truncate(verification.output, MAX_VERIFY_OUTPUT);
       verifyFailed = verification.exitCode !== 0;
     }
@@ -1354,6 +1377,16 @@ async function main() {
     }
     if ((await statusPorcelain(workspace)).length === 0) {
       return await publishAnswer();
+    }
+    let finalVerifyOutput = verifyOutput;
+    let finalVerifyFailed = verifyFailed;
+    let verifyAfterReview = false;
+    if (verifyCommand && reviewEnabled) {
+      console.log(`Re-running verification command after the reviewer pass: ${verifyCommand}`);
+      const verification = await runVerification(workspace, verifyCommand);
+      finalVerifyOutput = truncate(verification.output, MAX_VERIFY_OUTPUT);
+      finalVerifyFailed = verification.exitCode !== 0;
+      verifyAfterReview = true;
     }
     await configureUser(
       workspace,
@@ -1396,8 +1429,9 @@ ${truncate(
           task: trigger.prompt,
           implementer: implementer.result,
           verifyCommand,
-          verifyOutput,
-          verifyFailed,
+          verifyOutput: finalVerifyOutput,
+          verifyFailed: finalVerifyFailed,
+          verifyAfterReview,
           reviewer
         })
       });

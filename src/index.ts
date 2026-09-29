@@ -2,15 +2,14 @@
  * Orchestrator (main entry).
  *
  * Trigger -> permission gate -> implementer agent -> verify -> reviewer agent
- * -> commit/push -> pull request (or PR-branch update) -> reply comment.
+ * -> verify again -> commit/push -> pull request (or PR-branch update)
+ * -> reply comment.
  *
  * Best-effort: it always reports, never leaves an unhandled rejection, and
  * returns 0 on success / 1 on failure.
  */
 
-import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { promisify } from "node:util";
 import { runAgent, listAvailableModels, type AgentResult } from "./agent";
 import { downloadAttachments, extractAttachmentUrls } from "./attachments";
 import { setupAgentAuth } from "./auth";
@@ -18,24 +17,24 @@ import { parseTrigger, type Trigger } from "./event";
 import * as git from "./git";
 import { GitHubClient } from "./github";
 import { buildImplementerPrompt, buildReviewerPrompt, type TaskContext } from "./prompt";
+import {
+  buildAnswerComment,
+  buildPullRequestBody,
+  buildReport,
+  MAX_COMMENT_LENGTH,
+  MAX_PR_VERIFY_OUTPUT,
+  summarize,
+  truncate,
+} from "./report";
 import { collectSecrets, scrubSecrets } from "./scrub";
 import { configureSubagentModel, readRepositoryModel } from "./subagent";
+import { runVerification } from "./verify";
 
-const execFileAsync = promisify(execFile);
-
-const MAX_COMMENT_LENGTH = 60000;
 const MAX_VERIFY_OUTPUT = 20000;
-const MAX_PR_VERIFY_OUTPUT = 4000;
-const MAX_SHELL_BUFFER = 64 * 1024 * 1024;
 
 function env(name: string, fallback = ""): string {
   const value = process.env[name];
   return value === undefined || value.length === 0 ? fallback : value;
-}
-
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}\n\n...(truncated ${text.length - max} characters)`;
 }
 
 function errorMessage(error: unknown): string {
@@ -56,138 +55,12 @@ function parseMentions(value: string): string[] {
   return mentions.length > 0 ? mentions : ["@commandcode-agent"];
 }
 
-function formatDuration(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${seconds % 60}s`;
-}
-
 function firstLine(text: string): string {
   const line = text
     .split(/\r?\n/)
     .map((part) => part.trim())
     .find((part) => part.length > 0);
   return line ?? "commandcode agent changes";
-}
-
-function shellInvocation(command: string): { file: string; args: string[] } {
-  if (process.platform === "win32") {
-    return { file: process.env["ComSpec"] ?? "cmd.exe", args: ["/d", "/s", "/c", command] };
-  }
-  return { file: "/bin/sh", args: ["-c", command] };
-}
-
-async function runCommand(cwd: string, command: string): Promise<{ output: string; exitCode: number }> {
-  const { file, args } = shellInvocation(command);
-  try {
-    const { stdout, stderr } = await execFileAsync(file, args, { cwd, maxBuffer: MAX_SHELL_BUFFER });
-    return { output: [stdout, stderr].filter((part) => part.length > 0).join("\n"), exitCode: 0 };
-  } catch (error) {
-    const failure = error as { stdout?: unknown; stderr?: unknown; code?: unknown; message?: unknown };
-    const stdout = typeof failure.stdout === "string" ? failure.stdout : "";
-    const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
-    const message = typeof failure.message === "string" ? failure.message : "";
-    const output = [stdout, stderr, message].filter((part) => part.length > 0).join("\n");
-    const exitCode = typeof failure.code === "number" ? failure.code : 1;
-    return { output, exitCode };
-  }
-}
-
-function summarize(text: string, fallback: string): string {
-  const trimmed = text.trim();
-  return trimmed.length > 0 ? trimmed : fallback;
-}
-
-interface PullRequestBodyOptions {
-  number: number | undefined;
-  task: string;
-  implementer: AgentResult;
-  verifyCommand: string;
-  verifyOutput: string | null;
-  verifyFailed: boolean;
-  reviewer: AgentResult | null;
-}
-
-function buildPullRequestBody(options: PullRequestBodyOptions): string {
-  const sections: string[] = [];
-
-  sections.push("## Task");
-  sections.push(options.task.trim() || "(no task text provided)");
-
-  sections.push("## What changed");
-  sections.push(summarize(options.implementer.finalText, "(the implementer returned no summary)"));
-
-  sections.push("## Verification");
-  if (options.verifyCommand) {
-    sections.push(`Command: \`${options.verifyCommand}\``);
-    sections.push(`Result: ${options.verifyFailed ? "failed" : "passed"}`);
-    sections.push("```");
-    sections.push(
-      truncate(summarize(options.verifyOutput ?? "", "(no output captured)"), MAX_PR_VERIFY_OUTPUT),
-    );
-    sections.push("```");
-  } else {
-    sections.push("not configured");
-  }
-
-  sections.push("## Review");
-  if (options.reviewer) {
-    sections.push(
-      options.reviewer.subtype === "error"
-        ? `The reviewer agent failed: ${options.reviewer.error ?? "unknown error"}`
-        : summarize(options.reviewer.finalText, "(the reviewer returned no summary)"),
-    );
-  } else {
-    sections.push("disabled");
-  }
-
-  if (options.number !== undefined) sections.push(`Closes #${options.number}`);
-
-  return truncate(sections.join("\n\n"), MAX_COMMENT_LENGTH);
-}
-
-interface ReportOptions {
-  branch: string;
-  isPullRequest: boolean;
-  prUrl: string | null;
-  model: string;
-  implementer: AgentResult;
-  reviewer: AgentResult | null;
-  startedAt: number;
-  runUrl: string;
-  /** Set when a configured subagent model could not be used. */
-  subagentModelNote?: string;
-}
-
-function buildReport(options: ReportOptions): string {
-  const lines: string[] = [];
-  lines.push(`Command Code finished the task on branch \`${options.branch}\`.`);
-
-  if (options.prUrl) lines.push(`Pull request: ${options.prUrl}`);
-  else if (options.isPullRequest) lines.push("Changes were pushed to the pull request branch.");
-
-  lines.push(`Model: ${options.model || "(default)"}`);
-
-  if (options.subagentModelNote) lines.push(options.subagentModelNote);
-
-  const sessions: string[] = [];
-  if (options.implementer.sessionId) sessions.push(`implementer ${options.implementer.sessionId}`);
-  if (options.reviewer?.sessionId) sessions.push(`reviewer ${options.reviewer.sessionId}`);
-  if (sessions.length > 0) lines.push(`Sessions: ${sessions.join(", ")}`);
-
-  lines.push(`Duration: ${formatDuration(Date.now() - options.startedAt)}`);
-  lines.push(`Run: ${options.runUrl}`);
-
-  return truncate(lines.join("\n"), MAX_COMMENT_LENGTH);
-}
-
-/**
- * The comment for a conversation turn: the agent's answer on its own.
- * Used when the task was a question and no files were changed.
- */
-function buildAnswerComment(result: AgentResult): string {
-  return truncate(summarize(result.finalText, "(the agent returned no answer)"), MAX_COMMENT_LENGTH);
 }
 
 async function safeDefaultBranch(github: GitHubClient): Promise<string> {
@@ -399,6 +272,13 @@ export async function main(): Promise<number> {
       }
     }
 
+    // Keep the write token out of `.git/config` while an agent session runs:
+    // `actions/checkout` persists an `extraheader` credential by default, and
+    // the implementer and reviewer run with `--yolo`, so a prompt injection
+    // could read and exfiltrate it. Auth is re-added only transiently, around
+    // the push (and the fetch on the pull request path), never across a session.
+    await git.unsetAuth(workspace);
+
     // Configure agent credentials (BYOK) when provided.
     let envOverrides: Record<string, string> = {};
     try {
@@ -486,12 +366,12 @@ export async function main(): Promise<number> {
       return await publishAnswer();
     }
 
-    // 8) Verification command (never throws).
+    // 8) Verification command (never throws), with a restricted environment.
     let verifyOutput: string | null = null;
     let verifyFailed = false;
     if (verifyCommand) {
       console.log(`Running verification command: ${verifyCommand}`);
-      const verification = await runCommand(workspace, verifyCommand);
+      const verification = await runVerification(workspace, verifyCommand);
       verifyOutput = truncate(verification.output, MAX_VERIFY_OUTPUT);
       verifyFailed = verification.exitCode !== 0;
     }
@@ -523,6 +403,21 @@ export async function main(): Promise<number> {
     // The reviewer may have adjusted the tree back to empty; answer then too.
     if ((await git.statusPorcelain(workspace)).length === 0) {
       return await publishAnswer();
+    }
+
+    // 9b) Re-run the verification after the reviewer pass: the reviewer is
+    // allowed to change the tree, so the result reported below must describe the
+    // final tree rather than a run the reviewer's edits invalidated. When the
+    // reviewer is disabled the initial run already describes the final tree.
+    let finalVerifyOutput = verifyOutput;
+    let finalVerifyFailed = verifyFailed;
+    let verifyAfterReview = false;
+    if (verifyCommand && reviewEnabled) {
+      console.log(`Re-running verification command after the reviewer pass: ${verifyCommand}`);
+      const verification = await runVerification(workspace, verifyCommand);
+      finalVerifyOutput = truncate(verification.output, MAX_VERIFY_OUTPUT);
+      finalVerifyFailed = verification.exitCode !== 0;
+      verifyAfterReview = true;
     }
 
     // 10) Commit and push.
@@ -577,8 +472,9 @@ export async function main(): Promise<number> {
           task: trigger.prompt,
           implementer: implementer.result,
           verifyCommand,
-          verifyOutput,
-          verifyFailed,
+          verifyOutput: finalVerifyOutput,
+          verifyFailed: finalVerifyFailed,
+          verifyAfterReview,
           reviewer,
         }),
       });
