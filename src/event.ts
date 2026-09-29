@@ -25,6 +25,22 @@ export interface Trigger {
   commentBody?: string;
 }
 
+/** Guards for the `issues` triggers that are not carried by the event action alone. */
+export interface TriggerConfig {
+  /**
+   * Label name that gates `issues: labeled`. When unset or empty, labeled
+   * events never trigger a run, so a stray label cannot start the agent.
+   */
+  label?: string;
+  /**
+   * Login of the bot this action runs as (for example `commandcode-agent[bot]`).
+   * An `issues: assigned` event only triggers when the assignee matches it, so a
+   * run is never started by assigning Dependabot, Renovate or any other bot.
+   * When unset or empty, assignment events never trigger a run.
+   */
+  botLogin?: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -43,6 +59,11 @@ function asNumber(value: unknown): number | undefined {
 
 function isWhitespace(char: string | undefined): boolean {
   return char === undefined || /\s/.test(char);
+}
+
+/** Logins and label names are matched case-insensitively. */
+function equalsIgnoringCase(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
 /**
@@ -85,8 +106,10 @@ export function extractPrompt(commentBody: string, mentions: string[]): string |
   return commentBody.slice(bestIndex + bestLength).trim();
 }
 
-function repositoryIdentity(payload: Record<string, unknown>): { owner: string; repo: string } | null {
-  const repository = asRecord(payload["repository"]);
+export function repositoryIdentity(payload: unknown): { owner: string; repo: string } | null {
+  const root = asRecord(payload);
+  if (!root) return null;
+  const repository = asRecord(root["repository"]);
   const owner = asString(asRecord(repository?.["owner"])?.["login"]);
   const repo = asString(repository?.["name"]);
   if (!owner || !repo) return null;
@@ -153,7 +176,12 @@ function parseCommentTrigger(
  * Parses a webhook `eventName` + `payload` into a {@link Trigger}.
  * Returns `null` for any unsupported event/action.
  */
-export function parseTrigger(eventName: string, payload: unknown, mentions: string[]): Trigger | null {
+export function parseTrigger(
+  eventName: string,
+  payload: unknown,
+  mentions: string[],
+  config: TriggerConfig = {},
+): Trigger | null {
   const root = asRecord(payload);
   if (!root) return null;
 
@@ -193,10 +221,22 @@ export function parseTrigger(eventName: string, payload: unknown, mentions: stri
 
   if (eventName === "issues") {
     const action = asString(root["action"]);
-    if (action !== "opened" && action !== "labeled" && action !== "assigned") return null;
-    if (action === "assigned") {
+
+    // Only an assignment to this app or an explicitly configured label may
+    // start a run. `opened` is deliberately absent: it fired on every issue,
+    // including from read-only users who then failed the permission gate.
+    if (action === "labeled") {
+      const label = config.label?.trim();
+      if (!label) return null;
+      const labelName = asString(asRecord(root["label"])?.["name"]);
+      if (labelName === undefined || !equalsIgnoringCase(labelName, label)) return null;
+    } else if (action === "assigned") {
+      const botLogin = config.botLogin?.trim();
+      if (!botLogin) return null;
       const assignee = asString(asRecord(root["assignee"])?.["login"]);
-      if (assignee === undefined || !assignee.endsWith("[bot]")) return null;
+      if (assignee === undefined || !equalsIgnoringCase(assignee, botLogin)) return null;
+    } else {
+      return null;
     }
 
     const issue = asRecord(root["issue"]);

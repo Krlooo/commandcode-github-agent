@@ -459,6 +459,9 @@ function asNumber(value) {
 function isWhitespace(char) {
   return char === void 0 || /\s/.test(char);
 }
+function equalsIgnoringCase(a, b) {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
 function extractPrompt(commentBody, mentions) {
   let bestIndex = -1;
   let bestLength = 0;
@@ -486,7 +489,9 @@ function extractPrompt(commentBody, mentions) {
   return commentBody.slice(bestIndex + bestLength).trim();
 }
 function repositoryIdentity(payload) {
-  const repository = asRecord(payload["repository"]);
+  const root = asRecord(payload);
+  if (!root) return null;
+  const repository = asRecord(root["repository"]);
   const owner = asString(asRecord(repository?.["owner"])?.["login"]);
   const repo = asString(repository?.["name"]);
   if (!owner || !repo) return null;
@@ -524,7 +529,7 @@ ${target.body}`;
   if (commentId !== void 0) trigger.commentId = commentId;
   return trigger;
 }
-function parseTrigger(eventName, payload, mentions) {
+function parseTrigger(eventName, payload, mentions, config = {}) {
   const root = asRecord(payload);
   if (!root) return null;
   const identity = repositoryIdentity(root);
@@ -556,10 +561,18 @@ function parseTrigger(eventName, payload, mentions) {
   }
   if (eventName === "issues") {
     const action = asString(root["action"]);
-    if (action !== "opened" && action !== "labeled" && action !== "assigned") return null;
-    if (action === "assigned") {
+    if (action === "labeled") {
+      const label = config.label?.trim();
+      if (!label) return null;
+      const labelName = asString(asRecord(root["label"])?.["name"]);
+      if (labelName === void 0 || !equalsIgnoringCase(labelName, label)) return null;
+    } else if (action === "assigned") {
+      const botLogin = config.botLogin?.trim();
+      if (!botLogin) return null;
       const assignee = asString(asRecord(root["assignee"])?.["login"]);
-      if (assignee === void 0 || !assignee.endsWith("[bot]")) return null;
+      if (assignee === void 0 || !equalsIgnoringCase(assignee, botLogin)) return null;
+    } else {
+      return null;
     }
     const issue = asRecord(root["issue"]);
     const number = asNumber(issue?.["number"]);
@@ -875,6 +888,20 @@ var GitHubClient = class {
   async getRepo() {
     const data = asRecord2(await this.request("GET", this.issuePath()));
     return { default_branch: asString2(data?.["default_branch"]) ?? "main" };
+  }
+  /**
+   * Resolves the login the token authenticates as, so an issue assignment can
+   * be matched against this app instead of any account ending in `[bot]`.
+   * The GraphQL `viewer` is used because `GET /app` rejects installation access
+   * tokens; for an app installation it returns the bot login (`<slug>[bot]`).
+   * Returns undefined when the login cannot be read.
+   */
+  async getAuthenticatedLogin() {
+    const data = asRecord2(
+      await this.request("POST", "/graphql", { query: "{ viewer { login } }" })
+    );
+    const login = asString2(asRecord2(asRecord2(data?.["data"])?.["viewer"])?.["login"]);
+    return login && login.length > 0 ? login : void 0;
   }
   async getIssue(number) {
     const data = asRecord2(await this.request("GET", this.issuePath(`/issues/${number}`)));
@@ -1242,6 +1269,11 @@ function parseMentions(value) {
   const mentions = value.split(",").map((mention) => mention.trim()).filter((mention) => mention.length > 0);
   return mentions.length > 0 ? mentions : ["@commandcode-agent"];
 }
+function payloadAction(payload) {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return "";
+  const action = payload["action"];
+  return typeof action === "string" ? action : "";
+}
 function firstLine(text) {
   const line = text.split(/\r?\n/).map((part) => part.trim()).find((part) => part.length > 0);
   return line ?? "commandcode agent changes";
@@ -1279,11 +1311,26 @@ async function main() {
       payload = JSON.parse(readFileSync3(eventPath, "utf8"));
     } catch (error) {
       logError("Could not read the GitHub event payload:", error);
-      return 0;
+      return 1;
     }
   }
   const mentions = parseMentions(env("INPUT_MENTIONS", "/cmd,/commandcode"));
-  const trigger = parseTrigger(eventName, payload, mentions);
+  const label = env("INPUT_LABEL").trim();
+  let botLogin = env("INPUT_BOT_LOGIN").trim();
+  if (!botLogin && eventName === "issues" && payloadAction(payload) === "assigned") {
+    const identity = repositoryIdentity(payload);
+    if (identity) {
+      try {
+        botLogin = await new GitHubClient({ token, owner: identity.owner, repo: identity.repo }).getAuthenticatedLogin() ?? "";
+      } catch (error) {
+        logError(
+          "Could not resolve the bot login for the assignment trigger; set the bot-login input to enable it:",
+          error
+        );
+      }
+    }
+  }
+  const trigger = parseTrigger(eventName, payload, mentions, { label, botLogin });
   if (!trigger) {
     console.log(`No trigger for event "${eventName}"; nothing to do.`);
     return 0;
