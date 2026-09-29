@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseAgentStdout } from "../src/agent";
+import {
+  DEFAULT_AGENT_TIMEOUT_MINUTES,
+  parseAgentStdout,
+  parseTimeoutMinutes,
+} from "../src/agent";
 
 function frame(value: unknown): string {
   return JSON.stringify(value);
@@ -88,5 +92,36 @@ describe("parseAgentStdout", () => {
       frame({ type: "result", subtype: "success", usage: {}, durationMs: 2, finalText: "second" }),
     ].join("\n");
     expect(parseAgentStdout(stdout)?.finalText).toBe("second");
+  });
+});
+
+describe("parseTimeoutMinutes", () => {
+  it("parses a positive number of minutes", () => {
+    expect(parseTimeoutMinutes("15")).toBe(15);
+    expect(parseTimeoutMinutes(" 12 ")).toBe(12);
+  });
+
+  it("accepts a fractional value", () => {
+    expect(parseTimeoutMinutes("0.5")).toBe(0.5);
+  });
+
+  it("falls back when the input is unset or blank", () => {
+    expect(parseTimeoutMinutes(undefined)).toBe(DEFAULT_AGENT_TIMEOUT_MINUTES);
+    expect(parseTimeoutMinutes("")).toBe(DEFAULT_AGENT_TIMEOUT_MINUTES);
+    expect(parseTimeoutMinutes("   ")).toBe(DEFAULT_AGENT_TIMEOUT_MINUTES);
+  });
+
+  it("falls back on a non-numeric value", () => {
+    expect(parseTimeoutMinutes("soon")).toBe(DEFAULT_AGENT_TIMEOUT_MINUTES);
+  });
+
+  it("falls back on zero and negative values", () => {
+    expect(parseTimeoutMinutes("0")).toBe(DEFAULT_AGENT_TIMEOUT_MINUTES);
+    expect(parseTimeoutMinutes("-5")).toBe(DEFAULT_AGENT_TIMEOUT_MINUTES);
+  });
+
+  it("honours a custom fallback", () => {
+    expect(parseTimeoutMinutes(undefined, 5)).toBe(5);
+    expect(parseTimeoutMinutes("nonsense", 5)).toBe(5);
   });
 });

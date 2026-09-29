@@ -3,6 +3,7 @@
  * Zero dependencies; every method narrows the JSON defensively.
  */
 
+import { fetchWithRetry } from "./net";
 import { MAX_CONTEXT_COMMENTS } from "./prompt";
 
 export interface GitHubClientOptions {
@@ -106,7 +107,19 @@ export class GitHubClient {
       init.body = JSON.stringify(body);
     }
 
-    const response = await fetch(`${this.apiBase}${path}`, init);
+    const response = await fetchWithRetry(`${this.apiBase}${path}`, init, {
+      onRetry: ({ attempt, delayMs, status, error }) => {
+        const reason =
+          status !== undefined
+            ? `HTTP ${status}`
+            : error instanceof Error
+              ? error.message
+              : String(error);
+        console.warn(
+          `GitHub API ${method} ${path} failed (${reason}); retrying in ${delayMs}ms (attempt ${attempt}).`,
+        );
+      },
+    });
     if (!response.ok) {
       throw new Error(
         `GitHub API ${method} ${path} failed: ${response.status} ${await this.errorMessage(response)}`,

@@ -49,6 +49,7 @@ permissions:
 | `model` | none | Model identifier passed to the Command Code CLI (`-m`). Required when `provider-api-key` is set. |
 | `subagent-model` | none | Model pinned for subagents the agent delegates to, not the session model. Ignored when the model is not available to the account, in which case subagents inherit the session model. |
 | `max-turns` | `100` | Maximum number of agent turns per agent run (implementer and reviewer). |
+| `agent-timeout-minutes` | `40` | Wall-clock limit for each agent process, in minutes. On expiry the process is killed and the timeout is reported through the normal failure path. Keep it below the job's `timeout-minutes` so the run can still post its report. |
 | `verify-command` | none | Command run to verify the change (e.g. `npm ci && npm test`); runs after the implementer agent and again after the reviewer pass. |
 | `review` | `true` | Run the reviewer agent pass after verification (`true`/`false`). |
 | `command-code-api-key` | none | Command Code API key (https://commandcode.ai/settings/keys), exported to the CLI as `COMMAND_CODE_API_KEY`. The recommended CI path; it takes precedence over the BYOK provider inputs. The same key works for the Provider API. |

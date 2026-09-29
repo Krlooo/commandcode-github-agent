@@ -10,7 +10,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { runAgent, listAvailableModels, type AgentResult } from "./agent";
+import { runAgent, listAvailableModels, parseTimeoutMinutes, type AgentResult } from "./agent";
 import { downloadAttachments, extractAttachmentUrls } from "./attachments";
 import { setupAgentAuth } from "./auth";
 import { parseTrigger, type Trigger } from "./event";
@@ -127,6 +127,7 @@ export async function main(): Promise<number> {
   }
   const model = env("INPUT_MODEL");
   const maxTurns = Number.parseInt(env("INPUT_MAX_TURNS", "100"), 10) || 100;
+  const agentTimeoutMs = Math.round(parseTimeoutMinutes(env("INPUT_AGENT_TIMEOUT_MINUTES")) * 60_000);
   const verifyCommand = env("INPUT_VERIFY_COMMAND");
   const reviewEnabled = env("INPUT_REVIEW", "true").toLowerCase() === "true";
 
@@ -355,6 +356,7 @@ export async function main(): Promise<number> {
       maxTurns,
       model: model || undefined,
       env: envOverrides,
+      timeoutMs: agentTimeoutMs,
     });
     if (implementer.result.subtype === "error") {
       await comment(
@@ -402,6 +404,7 @@ export async function main(): Promise<number> {
         maxTurns,
         model: model || undefined,
         env: envOverrides,
+        timeoutMs: agentTimeoutMs,
       });
       reviewer = reviewRun.result;
       if (reviewer.subtype === "error") {
