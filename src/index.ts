@@ -27,7 +27,11 @@ import {
   truncate,
 } from "./report";
 import { collectSecrets, scrubSecrets } from "./scrub";
-import { configureSubagentModel, readRepositoryModel } from "./subagent";
+import {
+  configureSubagentModel,
+  readRepositoryModel,
+  SUBAGENT_AGENT_NAME,
+} from "./subagent";
 import { runVerification } from "./verify";
 
 const MAX_VERIFY_OUTPUT = 20000;
@@ -168,6 +172,9 @@ export async function main(): Promise<number> {
   // Removes the generated subagent agent file on every exit path.
   let cleanupSubagent = (): void => {};
   let subagentModelNote: string | undefined;
+  // Set only when a subagent model was actually pinned, so the delegation rule
+  // is added to the implementer prompt only when the pin is active.
+  let subagentAgent: string | undefined;
 
   try {
     // 2) Permission gate: only collaborators with write/admin may trigger.
@@ -321,6 +328,7 @@ export async function main(): Promise<number> {
       });
       cleanupSubagent = subagent.cleanup;
       subagentModelNote = subagent.warning;
+      if (subagent.model) subagentAgent = SUBAGENT_AGENT_NAME;
     } catch (error) {
       logError("Could not configure the subagent model (continuing):", error);
     }
@@ -337,6 +345,7 @@ export async function main(): Promise<number> {
       task: trigger.prompt,
       attachments: attachmentPaths,
       ghReadAccess: agentReadToken.length > 0,
+      subagentAgent,
     };
 
     // 6) Implementer agent.

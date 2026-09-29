@@ -608,6 +608,11 @@ function buildImplementerPrompt(ctx) {
       "- This repository's issues and pull requests are readable with the gh CLI (GH_TOKEN is set): gh issue view <n>, gh pr view <n>, gh search. Use it when the task references them, and before answering a question, check whether it was already asked or answered in an issue or pull request: if it was, say where (issue or PR number) and what the conclusion was."
     );
   }
+  if (ctx.subagentAgent) {
+    lines.push(
+      `- When you delegate work to a subagent, pass subagent_type: ${ctx.subagentAgent} so the subagent uses the pinned subagent model.`
+    );
+  }
   lines.push(
     '- Write for people: plain sentences, no em dashes, no bold labels on every bullet, no marketing tone, no "not X but Y" constructions.'
   );
@@ -1186,6 +1191,7 @@ async function main() {
   let cleanupSubagent = () => {
   };
   let subagentModelNote;
+  let subagentAgent;
   try {
     let permission;
     try {
@@ -1309,6 +1315,7 @@ async function main() {
       });
       cleanupSubagent = subagent.cleanup;
       subagentModelNote = subagent.warning;
+      if (subagent.model) subagentAgent = SUBAGENT_AGENT_NAME;
     } catch (error) {
       logError("Could not configure the subagent model (continuing):", error);
     }
@@ -1323,7 +1330,8 @@ async function main() {
       branch,
       task: trigger.prompt,
       attachments: attachmentPaths,
-      ghReadAccess: agentReadToken.length > 0
+      ghReadAccess: agentReadToken.length > 0,
+      subagentAgent
     };
     const implementer = await runAgent({
       prompt: buildImplementerPrompt(taskContext),
