@@ -32,12 +32,16 @@ inputs:
     required: false
     default: "40"
   verify-command:
-    description: 'Command run to verify the change (e.g. "npm ci && npm test"); runs after the implementer agent and again after the reviewer pass.'
+    description: 'Command run to verify the change (e.g. "npm ci && npm test"); runs after the implementer agent, again after each repair attempt, and once more after the reviewer pass.'
     required: false
   review:
     description: "Run the reviewer agent pass after verification (true/false)."
     required: false
     default: "true"
+  repair-attempts:
+    description: "Bounded repair attempts when the verification command fails after the implementer pass; the failing output is handed back to the implementer and verification is re-run after each attempt (0 disables). Ignored when review is disabled."
+    required: false
+    default: "1"
   command-code-api-key:
     description: "Command Code API key (commandcode.ai/settings/keys), passed to the CLI as COMMAND_CODE_API_KEY. Recommended for CI; takes precedence over the BYOK provider inputs."
     required: false
@@ -81,6 +85,7 @@ runs:
         INPUT_AGENT_TIMEOUT_MINUTES: ${{ inputs.agent-timeout-minutes }}
         INPUT_VERIFY_COMMAND: ${{ inputs.verify-command }}
         INPUT_REVIEW: ${{ inputs.review }}
+        INPUT_REPAIR_ATTEMPTS: ${{ inputs.repair-attempts }}
         INPUT_COMMAND_CODE_API_KEY: ${{ inputs.command-code-api-key }}
         INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_PROVIDER_BASE_URL: ${{ inputs.provider-base-url }}

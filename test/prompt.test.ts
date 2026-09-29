@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildFreshRepairPrompt,
   buildImplementerPrompt,
+  buildRepairPrompt,
   buildReviewerPrompt,
   MAX_CONTEXT_COMMENTS,
+  type RepairContext,
   type TaskContext,
 } from "../src/prompt";
 import { SUBAGENT_AGENT_NAME } from "../src/subagent";
@@ -171,5 +174,43 @@ describe("buildReviewerPrompt", () => {
       "Attached images from the trigger comment (read them with your file tools before starting):",
     );
     expect(prompt).toContain("- /tmp/commandcode-attachments/run-xyz/image-1.png");
+  });
+});
+
+function repair(overrides: Partial<RepairContext> = {}): RepairContext {
+  return {
+    verifyCommand: "npm test",
+    verifyOutput: "FAIL src/auth.test.ts\n  expected 2 to be 3",
+    attempt: 1,
+    maxAttempts: 2,
+    ...overrides,
+  };
+}
+
+describe("buildRepairPrompt", () => {
+  it("hands the failing command and its output to the agent", () => {
+    const prompt = buildRepairPrompt(repair());
+    expect(prompt).toContain("npm test");
+    expect(prompt).toContain("expected 2 to be 3");
+    expect(prompt).toContain("repair attempt 1 of 2");
+  });
+
+  it("states the repair bounds and forbids pushing", () => {
+    const prompt = buildRepairPrompt(repair());
+    expect(prompt).toMatch(/do not push/i);
+    expect(prompt).toContain("run the project's checks");
+  });
+
+  it("notes when no output was captured", () => {
+    expect(buildRepairPrompt(repair({ verifyOutput: "   " }))).toContain("(no output captured)");
+  });
+});
+
+describe("buildFreshRepairPrompt", () => {
+  it("carries the full implementer context plus the failure", () => {
+    const prompt = buildFreshRepairPrompt(context(), repair());
+    expect(prompt).toContain("carlos/commandcode-github-agent");
+    expect(prompt).toContain("fix the flaky test");
+    expect(prompt).toContain("expected 2 to be 3");
   });
 });

@@ -218,6 +218,7 @@ async function runAgent(options) {
     String(options.maxTurns)
   ];
   if (options.model) args.push("-m", options.model);
+  if (options.resumeSessionId) args.push("--resume", options.resumeSessionId);
   const env2 = agentEnv(process.env, options.env ?? {});
   const { stdout, stderr, exitCode, timedOut } = await spawnAgent(binary, args, {
     cwd: options.workspace,
@@ -613,6 +614,7 @@ ${body}`,
 
 // src/git.ts
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
 var MAX_BUFFER2 = 64 * 1024 * 1024;
@@ -675,6 +677,15 @@ async function diffStat(cwd) {
   const output = await git(cwd, ["diff", "--cached", "--stat"]);
   await git(cwd, ["reset"]);
   return output.trim();
+}
+async function workingTreeFingerprint(cwd) {
+  await addAll(cwd);
+  try {
+    const output = await git(cwd, ["diff", "--cached"]);
+    return createHash("sha256").update(output).digest("hex");
+  } finally {
+    await git(cwd, ["reset"]);
+  }
 }
 
 // src/prompt.ts
@@ -805,6 +816,31 @@ function buildReviewerPrompt(ctx, evidence) {
     "- Write for people: plain sentences, no em dashes, no bold labels on every bullet, no marketing tone."
   );
   return lines.join("\n");
+}
+function buildRepairPrompt(repair) {
+  const lines = [];
+  lines.push("## Verification failed");
+  lines.push(
+    `The \`${repair.verifyCommand}\` verification command failed after your change. This is repair attempt ${repair.attempt} of ${repair.maxAttempts}.`
+  );
+  lines.push("Command output:");
+  lines.push("```");
+  lines.push(repair.verifyOutput.trim().length > 0 ? repair.verifyOutput : "(no output captured)");
+  lines.push("```");
+  lines.push(
+    "- Fix the cause of the failure directly in the working tree; this is a repair of your own change, not a new task."
+  );
+  lines.push(
+    "- Re-run the project's checks after fixing and make sure they pass before you finish."
+  );
+  lines.push("- Do not push, do not create branches, do not open pull requests.");
+  lines.push("- End with a concise summary of what you changed.");
+  return lines.join("\n");
+}
+function buildFreshRepairPrompt(ctx, repair) {
+  return `${buildImplementerPrompt(ctx)}
+
+${buildRepairPrompt(repair)}`;
 }
 
 // src/github.ts
@@ -1001,6 +1037,65 @@ var GitHubClient = class {
   }
 };
 
+// src/repair.ts
+var DEFAULT_REPAIR_ATTEMPTS = 1;
+function parseRepairAttempts(value, fallback = DEFAULT_REPAIR_ATTEMPTS) {
+  if (value === void 0) return fallback;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return fallback;
+  const attempts = Number(trimmed);
+  if (!Number.isFinite(attempts) || attempts < 0) return fallback;
+  return Math.floor(attempts);
+}
+function decideRepair(input) {
+  if (input.maxAttempts <= 0) return { run: false, reason: "disabled" };
+  if (input.attemptsUsed > 0 && !input.lastAttemptChangedTree) {
+    return { run: false, reason: "no_change" };
+  }
+  if (input.attemptsUsed >= input.maxAttempts) {
+    return { run: false, reason: "attempts_exhausted" };
+  }
+  return { run: true };
+}
+var SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+function isResumableSessionId(id) {
+  if (typeof id !== "string") return false;
+  const trimmed = id.trim();
+  if (trimmed.length < 4 || trimmed.length > 128) return false;
+  if (trimmed.toLowerCase() === "undefined" || trimmed.toLowerCase() === "null") return false;
+  if (trimmed.includes("/") || trimmed.includes("\\")) return false;
+  return SESSION_ID_PATTERN.test(trimmed);
+}
+async function runRepairLoop(options) {
+  if (options.maxAttempts <= 0) {
+    return { attempts: 0, outcome: "disabled" };
+  }
+  let attempts = 0;
+  let lastAttemptChangedTree = true;
+  let sessionId = options.initialSessionId;
+  while (true) {
+    const decision = decideRepair({
+      maxAttempts: options.maxAttempts,
+      attemptsUsed: attempts,
+      lastAttemptChangedTree
+    });
+    if (!decision.run) {
+      return { attempts, outcome: decision.reason };
+    }
+    const before = await options.fingerprint();
+    const resumeSessionId = isResumableSessionId(sessionId) ? sessionId : void 0;
+    const result = await options.runAttempt({ attempt: attempts + 1, resumeSessionId });
+    attempts += 1;
+    const after = await options.fingerprint();
+    lastAttemptChangedTree = before !== after;
+    sessionId = result.sessionId;
+    const verification = await options.verify();
+    if (verification.passed) {
+      return { attempts, outcome: "passed", passed: true, output: verification.output };
+    }
+  }
+}
+
 // src/report.ts
 var MAX_COMMENT_LENGTH = 6e4;
 var MAX_PR_VERIFY_OUTPUT = 4e3;
@@ -1019,6 +1114,28 @@ function formatDuration(ms) {
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   return `${minutes}m ${seconds % 60}s`;
+}
+function repairOutcomeText(outcome) {
+  switch (outcome) {
+    case "passed":
+      return "the verification passed after the repair";
+    case "attempts_exhausted":
+      return "the attempt budget ran out";
+    case "no_change":
+      return "the last attempt produced no change to the working tree";
+    case "disabled":
+      return "repair is disabled";
+  }
+}
+function repairSummary(repair) {
+  if (!repair.initialVerificationFailed) {
+    return "The first verification passed; no repair attempt was needed.";
+  }
+  if (repair.attempts === 0) {
+    return `The first verification failed; no repair attempt ran (${repairOutcomeText(repair.outcome)}).`;
+  }
+  const attempts = repair.attempts === 1 ? "1 repair attempt" : `${repair.attempts} repair attempts`;
+  return `The first verification failed; the implementer ran ${attempts} and ${repairOutcomeText(repair.outcome)}.`;
 }
 function verificationPhase(options) {
   if (options.verifyAfterReview) {
@@ -1040,6 +1157,7 @@ function buildPullRequestBody(options) {
     sections.push(`Command: \`${options.verifyCommand}\``);
     sections.push(`Result: ${options.verifyFailed ? "failed" : "passed"}`);
     sections.push(verificationPhase(options));
+    if (options.repair) sections.push(repairSummary(options.repair));
     sections.push("```");
     sections.push(
       truncate(summarize(options.verifyOutput ?? "", "(no output captured)"), MAX_PR_VERIFY_OUTPUT)
@@ -1066,6 +1184,10 @@ function buildReport(options) {
   else if (options.isPullRequest) lines.push("Changes were pushed to the pull request branch.");
   lines.push(`Model: ${options.model || "(default)"}`);
   if (options.subagentModelNote) lines.push(options.subagentModelNote);
+  if (options.verifyCommand) {
+    lines.push(`Verification: ${options.verifyFailed ? "failed" : "passed"}.`);
+  }
+  if (options.repair) lines.push(repairSummary(options.repair));
   const sessions = [];
   if (options.implementer.sessionId) sessions.push(`implementer ${options.implementer.sessionId}`);
   if (options.reviewer?.sessionId) sessions.push(`reviewer ${options.reviewer.sessionId}`);
@@ -1345,6 +1467,7 @@ async function main() {
   const agentTimeoutMs = Math.round(parseTimeoutMinutes(env("INPUT_AGENT_TIMEOUT_MINUTES")) * 6e4);
   const verifyCommand = env("INPUT_VERIFY_COMMAND");
   const reviewEnabled = env("INPUT_REVIEW", "true").toLowerCase() === "true";
+  const repairAttempts = parseRepairAttempts(env("INPUT_REPAIR_ATTEMPTS"));
   const runUrl = `${env("GITHUB_SERVER_URL", "https://github.com")}/${trigger.owner}/${trigger.repo}/actions/runs/${env("GITHUB_RUN_ID")}`;
   const reactionKind = trigger.kind === "pull_request_review_comment" ? "review" : "issue";
   let reactionId;
@@ -1553,6 +1676,57 @@ async function main() {
       verifyOutput = truncate(verification.output, MAX_VERIFY_OUTPUT);
       verifyFailed = verification.exitCode !== 0;
     }
+    let repair = null;
+    if (verifyCommand && reviewEnabled && repairAttempts > 0) {
+      if (!verifyFailed) {
+        repair = { initialVerificationFailed: false, attempts: 0, outcome: "passed" };
+      } else {
+        let lastVerifyOutput = verifyOutput ?? "";
+        const loop = await runRepairLoop({
+          maxAttempts: repairAttempts,
+          initialSessionId: implementer.result.sessionId,
+          fingerprint: () => workingTreeFingerprint(workspace),
+          verify: async () => {
+            const verification = await runVerification(workspace, verifyCommand);
+            lastVerifyOutput = truncate(verification.output, MAX_VERIFY_OUTPUT);
+            return { passed: verification.exitCode === 0, output: lastVerifyOutput };
+          },
+          runAttempt: async ({ attempt, resumeSessionId }) => {
+            const repairContext = {
+              verifyCommand,
+              verifyOutput: lastVerifyOutput,
+              attempt,
+              maxAttempts: repairAttempts
+            };
+            console.log(
+              `Repair attempt ${attempt}/${repairAttempts}: ${resumeSessionId ? `resuming implementer session ${resumeSessionId}` : "starting a fresh session (no resumable session id)"}.`
+            );
+            const repairRun = await runAgent({
+              prompt: resumeSessionId ? buildRepairPrompt(repairContext) : buildFreshRepairPrompt(taskContext, repairContext),
+              workspace,
+              maxTurns,
+              model: model || void 0,
+              env: envOverrides,
+              timeoutMs: agentTimeoutMs,
+              resumeSessionId
+            });
+            if (repairRun.result.subtype === "error") {
+              console.warn(
+                `Repair attempt ${attempt} failed: ${repairRun.result.error ?? "unknown error"}`
+              );
+            }
+            return { sessionId: repairRun.result.sessionId };
+          }
+        });
+        repair = {
+          initialVerificationFailed: true,
+          attempts: loop.attempts,
+          outcome: loop.outcome
+        };
+        if (loop.output !== void 0) verifyOutput = loop.output;
+        if (loop.passed !== void 0) verifyFailed = !loop.passed;
+      }
+    }
     let diffStat2 = "";
     try {
       diffStat2 = await diffStat(workspace);
@@ -1631,7 +1805,8 @@ ${truncate(
           verifyOutput: finalVerifyOutput,
           verifyFailed: finalVerifyFailed,
           verifyAfterReview,
-          reviewer
+          reviewer,
+          repair
         })
       });
       prUrl = pull.html_url;
@@ -1646,7 +1821,10 @@ ${truncate(
         reviewer,
         startedAt,
         runUrl,
-        subagentModelNote
+        subagentModelNote,
+        repair,
+        verifyCommand,
+        verifyFailed: finalVerifyFailed
       })
     );
     await react("rocket");

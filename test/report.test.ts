@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { AgentResult } from "../src/agent";
-import { buildPullRequestBody, type PullRequestBodyOptions } from "../src/report";
+import {
+  buildPullRequestBody,
+  buildReport,
+  repairSummary,
+  type PullRequestBodyOptions,
+  type ReportOptions,
+} from "../src/report";
+import type { RepairReport } from "../src/repair";
 
 function result(overrides: Partial<AgentResult> = {}): AgentResult {
   return { subtype: "success", finalText: "done", ...overrides };
@@ -55,5 +62,74 @@ describe("buildPullRequestBody verification reporting", () => {
     const text = body();
     expect(text).toContain("looks good");
     expect(text).toContain("Closes #19");
+  });
+});
+
+describe("repair reporting", () => {
+  it("tells a first-time pass apart from a repaired change", () => {
+    const firstTime = body({ repair: { initialVerificationFailed: false, attempts: 0, outcome: "passed" } });
+    expect(firstTime).toContain("The first verification passed; no repair attempt was needed.");
+
+    const repaired = body({ repair: { initialVerificationFailed: true, attempts: 1, outcome: "passed" } });
+    expect(repaired).toContain("The first verification failed");
+    expect(repaired).toContain("1 repair attempt");
+    expect(repaired).toContain("verification passed after the repair");
+  });
+
+  it("reports a spent budget and a disabled repair honestly", () => {
+    expect(repairSummary({ initialVerificationFailed: true, attempts: 2, outcome: "attempts_exhausted" })).toContain(
+      "attempt budget ran out",
+    );
+    expect(repairSummary({ initialVerificationFailed: true, attempts: 1, outcome: "no_change" })).toContain(
+      "no change to the working tree",
+    );
+    expect(repairSummary({ initialVerificationFailed: true, attempts: 0, outcome: "disabled" })).toContain(
+      "no repair attempt ran",
+    );
+  });
+
+  it("states the repair outcome in the verification section", () => {
+    const text = body({ repair: { initialVerificationFailed: true, attempts: 1, outcome: "passed" } });
+    expect(text.indexOf("The first verification failed")).toBeGreaterThan(text.indexOf("Result:"));
+  });
+
+  it("omits repair text when no repair was configured", () => {
+    const text = body();
+    expect(text).not.toContain("repair attempt");
+  });
+});
+
+function report(overrides: Partial<ReportOptions> = {}): string {
+  return buildReport({
+    branch: "commandcode/issue-19-1700000000",
+    isPullRequest: false,
+    prUrl: "https://github.com/carlos/repo/pull/1",
+    model: "some-model",
+    implementer: result({ finalText: "implemented", sessionId: "implementer-session" }),
+    reviewer: result({ finalText: "looks good" }),
+    startedAt: Date.now(),
+    runUrl: "https://github.com/carlos/repo/actions/runs/1",
+    verifyCommand: "npm test",
+    verifyFailed: false,
+    ...overrides,
+  });
+}
+
+describe("buildReport verification status", () => {
+  it("states whether the final verification passed or failed", () => {
+    expect(report({ verifyFailed: false })).toContain("Verification: passed.");
+    expect(report({ verifyFailed: true })).toContain("Verification: failed.");
+  });
+
+  it("includes the repair outcome so a repaired change reads differently", () => {
+    const text = report({
+      repair: { initialVerificationFailed: true, attempts: 2, outcome: "attempts_exhausted" },
+    });
+    expect(text).toContain("attempt budget ran out");
+  });
+
+  it("omits the verification line when no command is configured", () => {
+    const text = report({ verifyCommand: "", repair: null });
+    expect(text).not.toContain("Verification:");
   });
 });

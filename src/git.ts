@@ -3,6 +3,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -103,6 +104,21 @@ export async function diffStat(cwd: string): Promise<string> {
   // semantics for the reviewer are the same as before the harness ran.
   await git(cwd, ["reset"]);
   return output.trim();
+}
+
+/**
+ * A hash of the complete staged diff, untracked files included. Used to detect
+ * whether a repair attempt touched the working tree at all: two equal
+ * fingerprints mean the attempt changed nothing.
+ */
+export async function workingTreeFingerprint(cwd: string): Promise<string> {
+  await addAll(cwd);
+  try {
+    const output = await git(cwd, ["diff", "--cached"]);
+    return createHash("sha256").update(output).digest("hex");
+  } finally {
+    await git(cwd, ["reset"]);
+  }
 }
 
 export async function currentBranch(cwd: string): Promise<string> {

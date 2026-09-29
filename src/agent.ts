@@ -54,6 +54,11 @@ export interface RunAgentOptions {
   env?: Record<string, string>;
   /** Wall-clock limit for the process (ms). When it expires the process is killed. */
   timeoutMs?: number;
+  /**
+   * Session id to resume (`--resume <id>`), so a follow-up run continues the
+   * earlier session instead of starting blind. Omit to start a fresh session.
+   */
+  resumeSessionId?: string;
 }
 
 export interface RunAgentOutcome {
@@ -348,6 +353,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcom
     String(options.maxTurns),
   ];
   if (options.model) args.push("-m", options.model);
+  if (options.resumeSessionId) args.push("--resume", options.resumeSessionId);
 
   const env = agentEnv(process.env, options.env ?? {});
 
