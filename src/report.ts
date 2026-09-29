@@ -5,6 +5,7 @@
  */
 
 import type { AgentResult } from "./agent";
+import type { RepairOutcome, RepairReport } from "./repair";
 
 export const MAX_COMMENT_LENGTH = 60000;
 export const MAX_PR_VERIFY_OUTPUT = 4000;
@@ -40,6 +41,36 @@ export interface PullRequestBodyOptions {
    */
   verifyAfterReview: boolean;
   reviewer: AgentResult | null;
+  /** What the bounded repair loop did, when one was configured. */
+  repair?: RepairReport | null;
+}
+
+function repairOutcomeText(outcome: RepairOutcome): string {
+  switch (outcome) {
+    case "passed":
+      return "the verification passed after the repair";
+    case "attempts_exhausted":
+      return "the attempt budget ran out";
+    case "no_change":
+      return "the last attempt produced no change to the working tree";
+    case "disabled":
+      return "repair is disabled";
+  }
+}
+
+/**
+ * A line stating what repair did, so a change that passed first time reads
+ * differently from one that needed repair.
+ */
+export function repairSummary(repair: RepairReport): string {
+  if (!repair.initialVerificationFailed) {
+    return "The first verification passed; no repair attempt was needed.";
+  }
+  if (repair.attempts === 0) {
+    return `The first verification failed; no repair attempt ran (${repairOutcomeText(repair.outcome)}).`;
+  }
+  const attempts = repair.attempts === 1 ? "1 repair attempt" : `${repair.attempts} repair attempts`;
+  return `The first verification failed; the implementer ran ${attempts} and ${repairOutcomeText(repair.outcome)}.`;
 }
 
 function verificationPhase(options: PullRequestBodyOptions): string {
@@ -66,6 +97,7 @@ export function buildPullRequestBody(options: PullRequestBodyOptions): string {
     sections.push(`Command: \`${options.verifyCommand}\``);
     sections.push(`Result: ${options.verifyFailed ? "failed" : "passed"}`);
     sections.push(verificationPhase(options));
+    if (options.repair) sections.push(repairSummary(options.repair));
     sections.push("```");
     sections.push(
       truncate(summarize(options.verifyOutput ?? "", "(no output captured)"), MAX_PR_VERIFY_OUTPUT),
@@ -102,6 +134,12 @@ export interface ReportOptions {
   runUrl: string;
   /** Set when a configured subagent model could not be used. */
   subagentModelNote?: string;
+  /** What the bounded repair loop did, when one was configured. */
+  repair?: RepairReport | null;
+  /** The verification command; empty when none is configured. */
+  verifyCommand: string;
+  /** Whether the final verification (after the reviewer pass) failed. */
+  verifyFailed: boolean;
 }
 
 export function buildReport(options: ReportOptions): string {
@@ -114,6 +152,10 @@ export function buildReport(options: ReportOptions): string {
   lines.push(`Model: ${options.model || "(default)"}`);
 
   if (options.subagentModelNote) lines.push(options.subagentModelNote);
+  if (options.verifyCommand) {
+    lines.push(`Verification: ${options.verifyFailed ? "failed" : "passed"}.`);
+  }
+  if (options.repair) lines.push(repairSummary(options.repair));
 
   const sessions: string[] = [];
   if (options.implementer.sessionId) sessions.push(`implementer ${options.implementer.sessionId}`);

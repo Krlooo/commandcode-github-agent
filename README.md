@@ -8,7 +8,8 @@ A run follows the same pipeline every time:
 
 ```
 trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verification command
-   ->  reviewer agent  ->  verification command (re-run)  ->  commit / push  ->  pull request  ->  report comment
+   ->  repair attempts (when that verification fails)  ->  reviewer agent
+   ->  verification command (re-run)  ->  commit / push  ->  pull request  ->  report comment
 ```
 
 1. Trigger: an `@commandcode-agent` comment (on an issue, a pull request or a pull request review), an issue assigned to the app, an issue carrying the configured `label`, or a manual `workflow_dispatch`. Opening an issue does not start a run. Images pasted into the triggering comment are downloaded and handed to the agent. The triggering comment gets a 👀 reaction while the run is in progress, replaced with 🚀 on success or 👎 on failure.
@@ -16,11 +17,12 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
 3. Branch: for an issue the agent creates `commandcode/issue-<n>-<timestamp>` from the default branch. For a pull request it checks out the PR head branch and pushes back to it.
 4. Implementer agent: `cmdc` runs headless (`-p ... --yolo --output-format json --max-turns ...`) with the task, the sanitized issue/PR context and a set of rules. It edits the working tree. The write token is removed from the local git config before this point.
 5. Verification command: the `verify-command` runs in the workspace with a restricted environment (no GitHub, Actions or provider tokens, the same allowlist the agent gets) and its output is kept for the reviewer.
-6. Reviewer agent: a second `cmdc` session with no shared context audits the diff and the verification output, fixes gaps and writes a review summary.
-7. Re-verification: because the reviewer may have changed the tree, the `verify-command` runs again after the reviewer pass. The pull request body reports this final result and states which run it describes.
-8. Commit and push: the harness commits the working tree as `commandcode-agent[bot]` and pushes. Auth is configured for the push and removed immediately after.
-9. Pull request: for issues it opens a PR; for pull requests it updates the branch. The body has the task, the change summary, the verification result and the review.
-10. Report comment: a final comment links the branch, the PR, the model, the agent sessions, the duration and the workflow run.
+6. Repair: when that verification fails, the failing output is handed back to the implementer for up to `repair-attempts` bounded attempts (default one, zero disables). Each attempt resumes the implementer's own session by id when the previous result carried a usable one, or starts a fresh session with the failure in the prompt otherwise. The verification re-runs after every attempt and the loop stops as soon as it passes; an attempt that leaves the working tree unchanged stops the loop instead of retrying. This step runs only when the reviewer is enabled.
+7. Reviewer agent: a second `cmdc` session with no shared context audits the diff and the verification output, fixes gaps and writes a review summary.
+8. Re-verification: because the reviewer may have changed the tree, the `verify-command` runs again after the reviewer pass. The pull request body reports this final result and states which run it describes.
+9. Commit and push: the harness commits the working tree as `commandcode-agent[bot]` and pushes. Auth is configured for the push and removed immediately after.
+10. Pull request: for issues it opens a PR; for pull requests it updates the branch. The body has the task, the change summary, the verification result and the review, and says how many repair attempts ran.
+11. Report comment: a final comment links the branch, the PR, the model, the agent sessions, the duration and the workflow run.
 
 If the mention asks a question or requests an explanation rather than a change, the agent replies in the thread and opens no pull request; the recent comments are part of its context, so you can keep the conversation going by mentioning it again. With a read-only token configured, it also checks whether the question was already asked or answered in another issue or pull request and points you there.
 
@@ -52,8 +54,9 @@ permissions:
 | `subagent-model` | none | Model pinned for subagents the agent delegates to, not the session model. Ignored when the model is not available to the account, in which case subagents inherit the session model. |
 | `max-turns` | `100` | Maximum number of agent turns per agent run (implementer and reviewer). |
 | `agent-timeout-minutes` | `40` | Wall-clock limit for each agent process, in minutes. On expiry the process is killed and the timeout is reported through the normal failure path. Keep it below the job's `timeout-minutes` so the run can still post its report. |
-| `verify-command` | none | Command run to verify the change (e.g. `npm ci && npm test`); runs after the implementer agent and again after the reviewer pass. |
+| `verify-command` | none | Command run to verify the change (e.g. `npm ci && npm test`); runs after the implementer agent, again after each repair attempt, and once more after the reviewer pass. |
 | `review` | `true` | Run the reviewer agent pass after verification (`true`/`false`). |
+| `repair-attempts` | `1` | Bounded repair attempts when the verification fails after the implementer pass. The failing output goes back to the implementer, which resumes its own session when a usable session id is available, and verification re-runs after each attempt. `0` disables repair; ignored when `review` is false. |
 | `command-code-api-key` | none | Command Code API key (https://commandcode.ai/settings/keys), exported to the CLI as `COMMAND_CODE_API_KEY`. The recommended CI path; it takes precedence over the BYOK provider inputs. The same key works for the Provider API. |
 | `provider` | none | BYOK provider id written to `~/.commandcode/providers.json` (e.g. `openrouter`). |
 | `provider-base-url` | none | Base URL for the BYOK provider (e.g. `https://openrouter.ai/api/v1`). |

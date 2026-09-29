@@ -16,7 +16,15 @@ import { setupAgentAuth } from "./auth";
 import { parseTrigger, repositoryIdentity, type Trigger } from "./event";
 import * as git from "./git";
 import { GitHubClient } from "./github";
-import { buildImplementerPrompt, buildReviewerPrompt, type TaskContext } from "./prompt";
+import {
+  buildFreshRepairPrompt,
+  buildImplementerPrompt,
+  buildRepairPrompt,
+  buildReviewerPrompt,
+  type RepairContext,
+  type TaskContext,
+} from "./prompt";
+import { parseRepairAttempts, runRepairLoop, type RepairReport } from "./repair";
 import {
   buildAnswerComment,
   buildPullRequestBody,
@@ -160,6 +168,7 @@ export async function main(): Promise<number> {
   const agentTimeoutMs = Math.round(parseTimeoutMinutes(env("INPUT_AGENT_TIMEOUT_MINUTES")) * 60_000);
   const verifyCommand = env("INPUT_VERIFY_COMMAND");
   const reviewEnabled = env("INPUT_REVIEW", "true").toLowerCase() === "true";
+  const repairAttempts = parseRepairAttempts(env("INPUT_REPAIR_ATTEMPTS"));
 
   const runUrl = `${env("GITHUB_SERVER_URL", "https://github.com")}/${trigger.owner}/${trigger.repo}/actions/runs/${env("GITHUB_RUN_ID")}`;
 
@@ -417,6 +426,72 @@ export async function main(): Promise<number> {
       verifyFailed = verification.exitCode !== 0;
     }
 
+    // 8b) Bounded repair: hand a failed verification back to the implementer
+    // before the reviewer pass, so a red tree is not pushed without a chance to
+    // fix it. Only runs when the reviewer is enabled (a disabled reviewer keeps
+    // the previous flow) and never when the repair budget is zero. Each attempt
+    // resumes the previous session when a usable id is available, and the loop
+    // stops as soon as verification passes or an attempt changes nothing.
+    let repair: RepairReport | null = null;
+    if (verifyCommand && reviewEnabled && repairAttempts > 0) {
+      if (!verifyFailed) {
+        repair = { initialVerificationFailed: false, attempts: 0, outcome: "passed" };
+      } else {
+        let lastVerifyOutput = verifyOutput ?? "";
+        const loop = await runRepairLoop({
+          maxAttempts: repairAttempts,
+          initialSessionId: implementer.result.sessionId,
+          fingerprint: () => git.workingTreeFingerprint(workspace),
+          verify: async () => {
+            const verification = await runVerification(workspace, verifyCommand);
+            lastVerifyOutput = truncate(verification.output, MAX_VERIFY_OUTPUT);
+            return { passed: verification.exitCode === 0, output: lastVerifyOutput };
+          },
+          runAttempt: async ({ attempt, resumeSessionId }) => {
+            const repairContext: RepairContext = {
+              verifyCommand,
+              verifyOutput: lastVerifyOutput,
+              attempt,
+              maxAttempts: repairAttempts,
+            };
+            console.log(
+              `Repair attempt ${attempt}/${repairAttempts}: ${
+                resumeSessionId
+                  ? `resuming implementer session ${resumeSessionId}`
+                  : "starting a fresh session (no resumable session id)"
+              }.`,
+            );
+            const repairRun = await runAgent({
+              prompt: resumeSessionId
+                ? buildRepairPrompt(repairContext)
+                : buildFreshRepairPrompt(taskContext, repairContext),
+              workspace,
+              maxTurns,
+              model: model || undefined,
+              env: envOverrides,
+              timeoutMs: agentTimeoutMs,
+              resumeSessionId,
+            });
+            if (repairRun.result.subtype === "error") {
+              console.warn(
+                `Repair attempt ${attempt} failed: ${repairRun.result.error ?? "unknown error"}`,
+              );
+            }
+            return { sessionId: repairRun.result.sessionId };
+          },
+        });
+        repair = {
+          initialVerificationFailed: true,
+          attempts: loop.attempts,
+          outcome: loop.outcome,
+        };
+        // The reviewer must see the tree as it stands after the repair: only
+        // overwrite the recorded verification when an attempt actually ran.
+        if (loop.output !== undefined) verifyOutput = loop.output;
+        if (loop.passed !== undefined) verifyFailed = !loop.passed;
+      }
+    }
+
     // Diff stat for the reviewer (stages all files).
     let diffStat = "";
     try {
@@ -518,6 +593,7 @@ export async function main(): Promise<number> {
           verifyFailed: finalVerifyFailed,
           verifyAfterReview,
           reviewer,
+          repair,
         }),
       });
       prUrl = pull.html_url;
@@ -535,6 +611,9 @@ export async function main(): Promise<number> {
         startedAt,
         runUrl,
         subagentModelNote,
+        repair,
+        verifyCommand,
+        verifyFailed: finalVerifyFailed,
       }),
     );
     await react("rocket");

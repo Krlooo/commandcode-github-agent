@@ -194,3 +194,50 @@ export function buildReviewerPrompt(ctx: TaskContext, evidence: ReviewerEvidence
   );
   return lines.join("\n");
 }
+
+export interface RepairContext {
+  /** The verification command that failed. */
+  verifyCommand: string;
+  /** Its captured output, handed to the agent so it can act on the failure. */
+  verifyOutput: string;
+  /** 1-based attempt number. */
+  attempt: number;
+  /** Total attempts allowed. */
+  maxAttempts: number;
+}
+
+/**
+ * The follow-up message for a repair attempt. It carries the failing command
+ * and its output, because the agent needs the actual failure to fix it. When a
+ * session is resumed this is the only new message; the agent still has the
+ * context of what it wrote.
+ */
+export function buildRepairPrompt(repair: RepairContext): string {
+  const lines: string[] = [];
+  lines.push("## Verification failed");
+  lines.push(
+    `The \`${repair.verifyCommand}\` verification command failed after your change. This is repair attempt ${repair.attempt} of ${repair.maxAttempts}.`,
+  );
+  lines.push("Command output:");
+  lines.push("```");
+  lines.push(repair.verifyOutput.trim().length > 0 ? repair.verifyOutput : "(no output captured)");
+  lines.push("```");
+  lines.push(
+    "- Fix the cause of the failure directly in the working tree; this is a repair of your own change, not a new task.",
+  );
+  lines.push(
+    "- Re-run the project's checks after fixing and make sure they pass before you finish.",
+  );
+  lines.push("- Do not push, do not create branches, do not open pull requests.");
+  lines.push("- End with a concise summary of what you changed.");
+  return lines.join("\n");
+}
+
+/**
+ * The prompt for a repair attempt when the agent's session cannot be resumed:
+ * the full implementer prompt followed by the failure, so a fresh session has
+ * both the task context and the output it must fix.
+ */
+export function buildFreshRepairPrompt(ctx: TaskContext, repair: RepairContext): string {
+  return `${buildImplementerPrompt(ctx)}\n\n${buildRepairPrompt(repair)}`;
+}
