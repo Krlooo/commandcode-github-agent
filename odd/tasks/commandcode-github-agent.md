@@ -1,6 +1,6 @@
 # Feature: commandcode-github-agent
 
-Created: 2026-09-28 · Updated: 2026-09-28 (T4 packaging + T5 live smoke before T6 publication)
+Created: 2026-09-28 · Updated: 2026-09-29 (production review: T7/T10 closed, T11-T12 landed, T13-T17 open)
 Branch: feature/mvp
 TDD: enabled (vitest) — authored checks: `npm test`, `npm run typecheck`, `npm run build`
 
@@ -95,7 +95,8 @@ Deferred gaps (from the benchmark, not in the MVP):
 - Token revocation: GITHUB_TOKEN has no revocation path (scoped to the job); short-lived installation
   tokens arrive with the GitHub App phase.
 - Egress control/sandboxing (copilot firewall territory; complex, not planned).
-- Image attachments and explicit prompt-too-large errors (opencode).
+- Image attachments landed in the parity pack (T10). Explicit prompt-too-large errors are still
+  missing (opencode).
 - Global wall-clock budget: workflow `timeout-minutes` (copilot's 59-min reference) + `--max-turns`.
 - Commit attribution: while on GITHUB_TOKEN, commits read as the workflow identity; the App phase
   brings a real `commandcode-agent[bot]` identity. Co-author trailers intentionally not added (user
@@ -160,8 +161,10 @@ verification with the app token pending.
       (exitCode 0, finalText "SMOKE_OK", sessionId captured) — route: inline
 - [x] T6 Publish: GitHub remote (private, then public), push, secrets (AGENT_API_KEY / APP_ID /
       APP_PRIVATE_KEY), real-issue test — done: covered by the local E2E (PR #3)
-- [ ] T7 GitHub App: manifest + one-click creation done (id 5110077, slug commandcode-agent); pending:
-      app installation + logo upload + app-token workflow path
+- [x] T7 GitHub App: manifest + one-click creation (id 5110077, slug commandcode-agent), installed on
+      the repository, and the app-token workflow path verified live — the dogfood runs push, comment
+      and react as `commandcode-agent[bot]`, and PRs opened with it trigger CI. PR #18 added the
+      Workflows permission the manifest needed. Pending: logo upload (UI, manual only)
 - [x] T8 Verifier-fixes batch: providers.json wrapper shape, token-leak scrub + header push, task
       sanitization, stdout tail buffer, Node 22 (action/CI/engines), workflow gate, unstage diffStat,
       README auth — done (58 tests green, typecheck clean, dist 35.4kb) — route: delegated writer
@@ -174,9 +177,33 @@ verification with the app token pending.
       worker URL, the handler exchanges ACTIONS_ID_TOKEN_REQUEST_URL with its request token.
       Deploy blocker: `wrangler login` (interactive) or CLOUDFLARE_API_TOKEN; wrangler 4.143 verified
       locally. No code started (writer cancelled on request).
-- [ ] T10 Parity pack: fork PR support, pull_request_review_comment trigger with correct reaction
-      routes, attached images downloaded outside the workspace and listed in the prompts, SHA-pinned
-      actions (review F6), README notes — route: delegated writer (in progress)
+- [x] T10 Parity pack: fork PR support (explicit fetch and push to the fork URL), the
+      `pull_request_review_comment` trigger with the correct reaction routes (`/pulls/comments/{id}`
+      versus `/issues/comments/{id}`), attached images downloaded outside the workspace into
+      `os.tmpdir()` and listed in both prompts, SHA-pinned actions, README notes — done: b3e6820
+      (PR #11) — route: delegated writer
+- [x] T11 Production review, security batch: keep the write token out of `.git/config` while an agent
+      session runs, run the verify command with the agent's least-privilege environment instead of the
+      full one, and re-run the verification after the reviewer so the reported result describes the
+      final tree. Report formatting moved to `src/report.ts`, verification to `src/verify.ts` —
+      done: PR #21 (67bbf63) — route: dogfood (issue #19), verified by the maintainer
+- [x] T12 Configurable subagent model: `subagent-model` input resolved input -> repository default ->
+      inherit, validated against the models the CLI reports rather than a hardcoded catalog, written as
+      a custom agent file that is git-excluded and removed on every exit path — done: PR #22 (fef4f43)
+      — route: dogfood (issue #20), verified by the maintainer
+- [ ] T13 Make the subagent pin take effect: steer delegation to the generated agent, but only when a
+      pin is active, so the built-in `explore` and `plan` agents keep serving delegation — issue #23,
+      in progress (dogfood)
+- [ ] T14 Bound network calls and the agent process: fetch timeouts, retries for transient API
+      failures, and a wall-clock timeout on the agent spawn so an expired run still reports — issue #24
+- [ ] T15 Trigger safety: stop firing on `issues: opened` and on any label, require the assignment to
+      be this app rather than any `*[bot]`, fail on an unreadable payload, and document `concurrency`
+      in the README example — issue #25
+- [ ] T16 Repair loop: feed a failed verification back to the implementer for a bounded, configurable
+      number of attempts, resuming its own session where possible — issue #26
+- [ ] T17 Polish batch: give the reviewer the actual diff, detect files left behind by verification and
+      review before `git add -A`, cap attachment downloads, align the mentions fallback with the action
+      default, and add `npm run build` to the dogfood verify command — issue #27
 
 ## Acceptance criteria
 
