@@ -11,6 +11,12 @@ inputs:
     description: "Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent (default: @commandcode-agent)."
     required: false
     default: "@commandcode-agent"
+  label:
+    description: "Issue label that starts a run on an `issues: labeled` event. Leave empty (the default) so labeled events never start a run."
+    required: false
+  bot-login:
+    description: "Login of the bot this action runs as, matched against the assignee of an `issues: assigned` event (e.g. commandcode-agent[bot]). Leave empty (the default) to resolve it from the token; if it cannot be resolved, issue assignments are ignored."
+    required: false
   model:
     description: "Model identifier passed to the Command Code CLI (-m). Required when provider-api-key is set."
     required: false
@@ -67,6 +73,8 @@ runs:
       run: node "${{ github.action_path }}/dist/index.js"
       env:
         INPUT_MENTIONS: ${{ inputs.mentions }}
+        INPUT_LABEL: ${{ inputs.label }}
+        INPUT_BOT_LOGIN: ${{ inputs.bot-login }}
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_SUBAGENT_MODEL: ${{ inputs.subagent-model }}
         INPUT_MAX_TURNS: ${{ inputs.max-turns }}

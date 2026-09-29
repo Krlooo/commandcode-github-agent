@@ -164,18 +164,14 @@ describe("parseTrigger", () => {
     expect(parseTrigger("pull_request_review_comment", payload, mentions)).toBeNull();
   });
 
-  it("parses an opened issue into a task from title + body", () => {
+  it("ignores an opened issue, which is not an assigned or labeled trigger", () => {
     const payload = {
       action: "opened",
       issue: { ...issue, labels: [{ name: "commandcode" }] },
       repository: repo,
       sender: { login: "carlos" },
     };
-    const trigger = parseTrigger("issues", payload, mentions);
-    expect(trigger?.kind).toBe("issues");
-    expect(trigger?.prompt).toContain("Fix the flaky test");
-    expect(trigger?.prompt).toContain("The auth test fails on Windows.");
-    expect(trigger?.commentId).toBeUndefined();
+    expect(parseTrigger("issues", payload, mentions)).toBeNull();
   });
 
   it("ignores closed issues", () => {
@@ -188,19 +184,42 @@ describe("parseTrigger", () => {
     expect(parseTrigger("issues", payload, mentions)).toBeNull();
   });
 
-  it("parses a labeled issue the same way as an opened one", () => {
+  it("parses a labeled issue when the configured label was the one added", () => {
     const payload = {
       action: "labeled",
+      label: { name: "commandcode" },
       issue: { ...issue, labels: [{ name: "commandcode" }] },
       repository: repo,
       sender: { login: "carlos" },
     };
-    const trigger = parseTrigger("issues", payload, mentions);
+    const trigger = parseTrigger("issues", payload, mentions, { label: "commandcode" });
     expect(trigger?.kind).toBe("issues");
     expect(trigger?.prompt).toContain("Fix the flaky test");
   });
 
-  it("parses an issue assigned to a bot the same way as an opened one", () => {
+  it("ignores a labeled issue when no label is configured", () => {
+    const payload = {
+      action: "labeled",
+      label: { name: "commandcode" },
+      issue: { ...issue, labels: [{ name: "commandcode" }] },
+      repository: repo,
+      sender: { login: "carlos" },
+    };
+    expect(parseTrigger("issues", payload, mentions)).toBeNull();
+  });
+
+  it("ignores a labeled issue when a different label was added", () => {
+    const payload = {
+      action: "labeled",
+      label: { name: "bug" },
+      issue: { ...issue, labels: [{ name: "commandcode" }, { name: "bug" }] },
+      repository: repo,
+      sender: { login: "carlos" },
+    };
+    expect(parseTrigger("issues", payload, mentions, { label: "commandcode" })).toBeNull();
+  });
+
+  it("parses an issue assigned to the configured bot", () => {
     const payload = {
       action: "assigned",
       issue: { ...issue, labels: [] },
@@ -208,9 +227,35 @@ describe("parseTrigger", () => {
       repository: repo,
       sender: { login: "carlos" },
     };
-    const trigger = parseTrigger("issues", payload, mentions);
+    const trigger = parseTrigger("issues", payload, mentions, {
+      botLogin: "commandcode-agent[bot]",
+    });
     expect(trigger?.kind).toBe("issues");
     expect(trigger?.prompt).toContain("Fix the flaky test");
+  });
+
+  it("ignores an issue assigned to an unrelated bot", () => {
+    const payload = {
+      action: "assigned",
+      issue: { ...issue, labels: [] },
+      assignee: { login: "dependabot[bot]" },
+      repository: repo,
+      sender: { login: "carlos" },
+    };
+    expect(
+      parseTrigger("issues", payload, mentions, { botLogin: "commandcode-agent[bot]" }),
+    ).toBeNull();
+  });
+
+  it("ignores an assigned issue when no bot login is configured", () => {
+    const payload = {
+      action: "assigned",
+      issue: { ...issue, labels: [] },
+      assignee: { login: "commandcode-agent[bot]" },
+      repository: repo,
+      sender: { login: "carlos" },
+    };
+    expect(parseTrigger("issues", payload, mentions)).toBeNull();
   });
 
   it("ignores an issue assigned to a human", () => {
@@ -221,7 +266,9 @@ describe("parseTrigger", () => {
       repository: repo,
       sender: { login: "carlos" },
     };
-    expect(parseTrigger("issues", payload, mentions)).toBeNull();
+    expect(
+      parseTrigger("issues", payload, mentions, { botLogin: "commandcode-agent[bot]" }),
+    ).toBeNull();
   });
 
   it("parses a workflow_dispatch with a prompt input", () => {

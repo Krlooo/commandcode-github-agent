@@ -161,6 +161,21 @@ export class GitHubClient {
     return { default_branch: asString(data?.["default_branch"]) ?? "main" };
   }
 
+  /**
+   * Resolves the login the token authenticates as, so an issue assignment can
+   * be matched against this app instead of any account ending in `[bot]`.
+   * The GraphQL `viewer` is used because `GET /app` rejects installation access
+   * tokens; for an app installation it returns the bot login (`<slug>[bot]`).
+   * Returns undefined when the login cannot be read.
+   */
+  async getAuthenticatedLogin(): Promise<string | undefined> {
+    const data = asRecord(
+      await this.request("POST", "/graphql", { query: "{ viewer { login } }" }),
+    );
+    const login = asString(asRecord(asRecord(data?.["data"])?.["viewer"])?.["login"]);
+    return login && login.length > 0 ? login : undefined;
+  }
+
   async getIssue(number: number): Promise<IssueInfo> {
     const data = asRecord(await this.request("GET", this.issuePath(`/issues/${number}`)));
     if (!data) throw new Error(`GitHub API returned an unexpected issue payload for #${number}`);

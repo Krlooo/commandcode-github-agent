@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { runAgent, listAvailableModels, parseTimeoutMinutes, type AgentResult } from "./agent";
 import { downloadAttachments, extractAttachmentUrls } from "./attachments";
 import { setupAgentAuth } from "./auth";
-import { parseTrigger, type Trigger } from "./event";
+import { parseTrigger, repositoryIdentity, type Trigger } from "./event";
 import * as git from "./git";
 import { GitHubClient } from "./github";
 import { buildImplementerPrompt, buildReviewerPrompt, type TaskContext } from "./prompt";
@@ -57,6 +57,12 @@ function parseMentions(value: string): string[] {
     .map((mention) => mention.trim())
     .filter((mention) => mention.length > 0);
   return mentions.length > 0 ? mentions : ["@commandcode-agent"];
+}
+
+function payloadAction(payload: unknown): string {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return "";
+  const action = (payload as Record<string, unknown>)["action"];
+  return typeof action === "string" ? action : "";
 }
 
 function firstLine(text: string): string {
@@ -107,12 +113,36 @@ export async function main(): Promise<number> {
       payload = JSON.parse(readFileSync(eventPath, "utf8"));
     } catch (error) {
       logError("Could not read the GitHub event payload:", error);
-      return 0;
+      return 1;
     }
   }
 
   const mentions = parseMentions(env("INPUT_MENTIONS", "/cmd,/commandcode"));
-  const trigger: Trigger | null = parseTrigger(eventName, payload, mentions);
+  const label = env("INPUT_LABEL").trim();
+
+  // An `issues: assigned` trigger must mean "assigned to this app", so resolve
+  // the login the token authenticates as unless one was configured. Resolution
+  // goes through the GraphQL `viewer` because app installation tokens cannot
+  // call `GET /app`. When it cannot be resolved, assignment events never fire
+  // (the parser ignores them without a login) rather than matching any `*[bot]`.
+  let botLogin = env("INPUT_BOT_LOGIN").trim();
+  if (!botLogin && eventName === "issues" && payloadAction(payload) === "assigned") {
+    const identity = repositoryIdentity(payload);
+    if (identity) {
+      try {
+        botLogin =
+          (await new GitHubClient({ token, owner: identity.owner, repo: identity.repo })
+            .getAuthenticatedLogin()) ?? "";
+      } catch (error) {
+        logError(
+          "Could not resolve the bot login for the assignment trigger; set the bot-login input to enable it:",
+          error,
+        );
+      }
+    }
+  }
+
+  const trigger: Trigger | null = parseTrigger(eventName, payload, mentions, { label, botLogin });
   if (!trigger) {
     console.log(`No trigger for event "${eventName}"; nothing to do.`);
     return 0;

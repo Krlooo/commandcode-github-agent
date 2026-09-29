@@ -11,7 +11,7 @@ trigger  ->  permission gate  ->  branch  ->  implementer agent  ->  verificatio
    ->  reviewer agent  ->  verification command (re-run)  ->  commit / push  ->  pull request  ->  report comment
 ```
 
-1. Trigger: an `@commandcode-agent` comment (on an issue, a pull request or a pull request review), an issue assigned to the app, or a manual `workflow_dispatch`. Images pasted into the triggering comment are downloaded and handed to the agent. The triggering comment gets a 👀 reaction while the run is in progress, replaced with 🚀 on success or 👎 on failure.
+1. Trigger: an `@commandcode-agent` comment (on an issue, a pull request or a pull request review), an issue assigned to the app, an issue carrying the configured `label`, or a manual `workflow_dispatch`. Opening an issue does not start a run. Images pasted into the triggering comment are downloaded and handed to the agent. The triggering comment gets a 👀 reaction while the run is in progress, replaced with 🚀 on success or 👎 on failure.
 2. Permission gate: the actor must have `write` or `admin` access to the repository. Anyone else gets an explanatory comment and the run stops. Events authored by a bot are ignored.
 3. Branch: for an issue the agent creates `commandcode/issue-<n>-<timestamp>` from the default branch. For a pull request it checks out the PR head branch and pushes back to it.
 4. Implementer agent: `cmdc` runs headless (`-p ... --yolo --output-format json --max-turns ...`) with the task, the sanitized issue/PR context and a set of rules. It edits the working tree. The write token is removed from the local git config before this point.
@@ -46,6 +46,8 @@ permissions:
 | Input | Default | Description |
 | --- | --- | --- |
 | `mentions` | `@commandcode-agent` | Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent. |
+| `label` | none | Issue label that starts a run on an `issues: labeled` event. Left empty, labeled events never start a run. |
+| `bot-login` | resolved from the token | Login of the bot this action runs as, matched against the assignee of an `issues: assigned` event (e.g. `commandcode-agent[bot]`). Left empty, the login is resolved from the token through the GraphQL `viewer`; if it cannot be resolved, issue assignments are ignored. |
 | `model` | none | Model identifier passed to the Command Code CLI (`-m`). Required when `provider-api-key` is set. |
 | `subagent-model` | none | Model pinned for subagents the agent delegates to, not the session model. Ignored when the model is not available to the account, in which case subagents inherit the session model. |
 | `max-turns` | `100` | Maximum number of agent turns per agent run (implementer and reviewer). |
@@ -108,6 +110,17 @@ jobs:
 
 For the BYOK alternative, replace `command-code-api-key` with `provider`, `provider-base-url` and `provider-api-key` (see [Auth](#auth)).
 
+### Triggers
+
+Subscribe only to the events you want, because the handler matches them strictly:
+
+- `issue_comment` and `pull_request_review_comment` (`types: [created]`) for mentions.
+- `issues` with `types: [assigned]` to start on an assignment. The run fires only when the assignee is the account the action authenticates as, resolved from the token or from the `bot-login` input, so assigning another bot does nothing.
+- `issues` with `types: [labeled]` to start on a label. Set the `label` input to the label that should trigger; with no `label` set, labeled events are ignored.
+- `workflow_dispatch` with a `prompt` input for manual runs.
+
+Opening an issue never starts a run, so there is no need to subscribe to `types: [opened]`.
+
 ### Concurrency
 
 Keep the `concurrency` block. Every run rebuilds `dist/index.js`, the committed bundle the action executes, so two runs started from different issues both change that file and their pull requests conflict by the time they meet.
@@ -148,6 +161,8 @@ Before the agents run, the action asks the CLI for the models available to the a
 
 - Collaborators-only gate: only actors with `write` or `admin` on the repository can trigger a run. The permission is looked up through the GitHub API.
 - Bot loop guard: events whose actor ends in `[bot]` are ignored, so the agent cannot trigger itself in a loop.
+- Assignment gate: an `issues: assigned` event only starts a run when the assignee is the account the action authenticates as, resolved through the GraphQL `viewer` or set with `bot-login`, so assigning Dependabot, Renovate or another bot cannot start one.
+- Label gate: `issues: labeled` only starts a run when the added label matches the configured `label`; no label configured means the event is ignored.
 - Prompt-injection sanitization: issue and PR text is stripped of HTML comments, zero-width and bidi control characters before it reaches a prompt, and the remaining context is marked as information only.
 - Scoped token: the action uses the `github-token` you pass, which defaults to the workflow token limited to the job's `permissions`. With the optional GitHub App setup (`app/`, `actions/create-github-app-token`), the agent acts as a bot with a short-lived installation token. The write token never enters the agent's environment; if you pass `agent-token`, that separate token is read-only.
 - Git config: the write token is removed from the local `.git/config` before any agent session runs, and re-added only for the push, as described above. Set `persist-credentials: false` on `actions/checkout` so the token is not persisted there in the first place.
