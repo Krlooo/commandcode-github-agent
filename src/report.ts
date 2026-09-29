@@ -43,6 +43,12 @@ export interface PullRequestBodyOptions {
   reviewer: AgentResult | null;
   /** What the bounded repair loop did, when one was configured. */
   repair?: RepairReport | null;
+  /**
+   * Paths that appeared after the implementer finished, typically build output
+   * or caches left by the verification and review steps. Listed so they are not
+   * committed silently.
+   */
+  leftoverFiles?: string[];
 }
 
 function repairOutcomeText(outcome: RepairOutcome): string {
@@ -107,6 +113,14 @@ export function buildPullRequestBody(options: PullRequestBodyOptions): string {
     sections.push("not configured");
   }
 
+  if (options.leftoverFiles && options.leftoverFiles.length > 0) {
+    sections.push("## Files created during verification or review");
+    sections.push(
+      "These files appeared after the implementer finished and were committed with the change. Review them and remove any that do not belong:\n\n" +
+        options.leftoverFiles.map((path) => `- ${path}`).join("\n"),
+    );
+  }
+
   sections.push("## Review");
   if (options.reviewer) {
     sections.push(
@@ -140,6 +154,8 @@ export interface ReportOptions {
   verifyCommand: string;
   /** Whether the final verification (after the reviewer pass) failed. */
   verifyFailed: boolean;
+  /** Paths that appeared after the implementer finished (build output, caches). */
+  leftoverFiles?: string[];
 }
 
 export function buildReport(options: ReportOptions): string {
@@ -156,6 +172,11 @@ export function buildReport(options: ReportOptions): string {
     lines.push(`Verification: ${options.verifyFailed ? "failed" : "passed"}.`);
   }
   if (options.repair) lines.push(repairSummary(options.repair));
+  if (options.leftoverFiles && options.leftoverFiles.length > 0) {
+    lines.push(
+      `Files appeared after the implementer finished (verification or review) and were committed: ${options.leftoverFiles.join(", ")}`,
+    );
+  }
 
   const sessions: string[] = [];
   if (options.implementer.sessionId) sessions.push(`implementer ${options.implementer.sessionId}`);

@@ -148,7 +148,14 @@ export function buildImplementerPrompt(ctx: TaskContext): string {
 }
 
 export interface ReviewerEvidence {
+  /** File-level summary (`git diff --stat`), shown when no full diff is available. */
   diffStat: string;
+  /**
+   * The full diff (already truncated by the caller when large). The reviewer
+   * needs the change itself, not only the file-level summary, to spot removals
+   * and behavioral regressions in modified lines.
+   */
+  diff?: string;
   verifyOutput: string | null;
 }
 
@@ -173,7 +180,8 @@ export function buildReviewerPrompt(ctx: TaskContext, evidence: ReviewerEvidence
   }
   lines.push("");
   lines.push("## Diff produced by the implementer");
-  lines.push(evidence.diffStat.trim().length > 0 ? evidence.diffStat : "(no diff stat available)");
+  const diff = (evidence.diff ?? "").trim();
+  lines.push(diff.length > 0 ? diff : evidence.diffStat.trim() || "(no diff stat available)");
   lines.push("");
   lines.push("## Verification output");
   lines.push(
@@ -184,6 +192,9 @@ export function buildReviewerPrompt(ctx: TaskContext, evidence: ReviewerEvidence
   lines.push("");
   lines.push("## Rules");
   lines.push("- Audit whether the requirement is fully addressed by the current working tree.");
+  lines.push(
+    "- Base your audit on the diff above rather than only the final state of the files; run git diff against the branch point yourself if you need more.",
+  );
   lines.push("- Explicitly look for anything not addressed, missing or incomplete.");
   lines.push("- Fix any gaps you find directly in the working tree; this is the only fix pass.");
   lines.push("- Do not push, do not create branches, do not open pull requests.");

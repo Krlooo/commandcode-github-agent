@@ -324,6 +324,42 @@ async function fetchWithRetry(url, init = {}, options = {}) {
 // src/attachments.ts
 var ATTACHMENT_PATTERN = /https:\/\/(?:github\.com\/user-attachments\/assets\/|user-images\.githubusercontent\.com\/)[^\s<>"'()]+/g;
 var TRAILING_PUNCTUATION = /[.,;:!?]+$/;
+var MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+function isImageContentType(contentType) {
+  if (contentType === null) return false;
+  return contentType.split(";")[0]?.trim().toLowerCase().startsWith("image/") ?? false;
+}
+async function readAtMost(response, maxBytes) {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel();
+    return null;
+  }
+  const body = response.body;
+  if (body === null) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer.byteLength > maxBytes ? null : buffer;
+  }
+  const reader = body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (; ; ) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === void 0) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks);
+}
 function extractAttachmentUrls(body) {
   const urls = [];
   const seen = /* @__PURE__ */ new Set();
@@ -358,15 +394,29 @@ async function downloadAttachments(urls, token) {
       const response = await fetchWithTimeout(url, {
         headers: {
           Authorization: `Bearer ${token}`,
-          Accept: "application/octet-stream"
+          Accept: "image/*"
         }
       });
       if (!response.ok) {
         console.warn(`Could not download attachment ${url}: HTTP ${response.status}`);
         continue;
       }
-      const bytes = Buffer.from(await response.arrayBuffer());
-      const extension = extensionFor(url, response.headers.get("content-type"));
+      const contentType = response.headers.get("content-type");
+      if (!isImageContentType(contentType)) {
+        await response.body?.cancel();
+        console.warn(
+          `Skipping attachment ${url}: content type ${contentType ?? "(none)"} is not an image`
+        );
+        continue;
+      }
+      const bytes = await readAtMost(response, MAX_ATTACHMENT_BYTES);
+      if (bytes === null) {
+        console.warn(
+          `Skipping attachment ${url}: larger than the ${MAX_ATTACHMENT_BYTES} byte limit`
+        );
+        continue;
+      }
+      const extension = extensionFor(url, contentType);
       const path = join(directory, `image-${index}.${extension}`);
       await writeFile(path, bytes);
       paths.push(path);
@@ -669,14 +719,33 @@ async function push(cwd, url, branch) {
   await git(cwd, ["push", url ?? "origin", `HEAD:refs/heads/${branch}`]);
 }
 async function statusPorcelain(cwd) {
-  const output = await git(cwd, ["status", "--porcelain"]);
+  const output = await git(cwd, ["status", "--porcelain", "--untracked-files=all"]);
   return output.split("\n").map((line) => line.trimEnd()).filter((line) => line.length > 0).map((line) => line.slice(3).trim()).filter((path) => path.length > 0);
+}
+function addedPaths(before, after) {
+  const known = new Set(before);
+  const added = [];
+  for (const path of after) {
+    if (known.has(path)) continue;
+    known.add(path);
+    added.push(path);
+  }
+  return added;
 }
 async function diffStat(cwd) {
   await addAll(cwd);
   const output = await git(cwd, ["diff", "--cached", "--stat"]);
   await git(cwd, ["reset"]);
   return output.trim();
+}
+async function stagedDiff(cwd) {
+  await addAll(cwd);
+  try {
+    const output = await git(cwd, ["diff", "--cached"]);
+    return output.trim();
+  } finally {
+    await git(cwd, ["reset"]);
+  }
 }
 async function workingTreeFingerprint(cwd) {
   await addAll(cwd);
@@ -798,7 +867,8 @@ function buildReviewerPrompt(ctx, evidence) {
   }
   lines.push("");
   lines.push("## Diff produced by the implementer");
-  lines.push(evidence.diffStat.trim().length > 0 ? evidence.diffStat : "(no diff stat available)");
+  const diff = (evidence.diff ?? "").trim();
+  lines.push(diff.length > 0 ? diff : evidence.diffStat.trim() || "(no diff stat available)");
   lines.push("");
   lines.push("## Verification output");
   lines.push(
@@ -807,6 +877,9 @@ function buildReviewerPrompt(ctx, evidence) {
   lines.push("");
   lines.push("## Rules");
   lines.push("- Audit whether the requirement is fully addressed by the current working tree.");
+  lines.push(
+    "- Base your audit on the diff above rather than only the final state of the files; run git diff against the branch point yourself if you need more."
+  );
   lines.push("- Explicitly look for anything not addressed, missing or incomplete.");
   lines.push("- Fix any gaps you find directly in the working tree; this is the only fix pass.");
   lines.push("- Do not push, do not create branches, do not open pull requests.");
@@ -1037,6 +1110,13 @@ var GitHubClient = class {
   }
 };
 
+// src/mentions.ts
+var DEFAULT_MENTIONS = "@commandcode-agent";
+function parseMentions(value) {
+  const mentions = value.split(",").map((mention) => mention.trim()).filter((mention) => mention.length > 0);
+  return mentions.length > 0 ? mentions : [DEFAULT_MENTIONS];
+}
+
 // src/repair.ts
 var DEFAULT_REPAIR_ATTEMPTS = 1;
 function parseRepairAttempts(value, fallback = DEFAULT_REPAIR_ATTEMPTS) {
@@ -1166,6 +1246,12 @@ function buildPullRequestBody(options) {
   } else {
     sections.push("not configured");
   }
+  if (options.leftoverFiles && options.leftoverFiles.length > 0) {
+    sections.push("## Files created during verification or review");
+    sections.push(
+      "These files appeared after the implementer finished and were committed with the change. Review them and remove any that do not belong:\n\n" + options.leftoverFiles.map((path) => `- ${path}`).join("\n")
+    );
+  }
   sections.push("## Review");
   if (options.reviewer) {
     sections.push(
@@ -1188,6 +1274,11 @@ function buildReport(options) {
     lines.push(`Verification: ${options.verifyFailed ? "failed" : "passed"}.`);
   }
   if (options.repair) lines.push(repairSummary(options.repair));
+  if (options.leftoverFiles && options.leftoverFiles.length > 0) {
+    lines.push(
+      `Files appeared after the implementer finished (verification or review) and were committed: ${options.leftoverFiles.join(", ")}`
+    );
+  }
   const sessions = [];
   if (options.implementer.sessionId) sessions.push(`implementer ${options.implementer.sessionId}`);
   if (options.reviewer?.sessionId) sessions.push(`reviewer ${options.reviewer.sessionId}`);
@@ -1374,6 +1465,7 @@ async function runVerification(cwd, command, source = process.env) {
 
 // src/index.ts
 var MAX_VERIFY_OUTPUT = 2e4;
+var MAX_REVIEW_DIFF = 4e4;
 function env(name, fallback = "") {
   const value = process.env[name];
   return value === void 0 || value.length === 0 ? fallback : value;
@@ -1386,10 +1478,6 @@ function errorMessage(error) {
   } catch {
     return String(error);
   }
-}
-function parseMentions(value) {
-  const mentions = value.split(",").map((mention) => mention.trim()).filter((mention) => mention.length > 0);
-  return mentions.length > 0 ? mentions : ["@commandcode-agent"];
 }
 function payloadAction(payload) {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return "";
@@ -1436,7 +1524,7 @@ async function main() {
       return 1;
     }
   }
-  const mentions = parseMentions(env("INPUT_MENTIONS", "/cmd,/commandcode"));
+  const mentions = parseMentions(env("INPUT_MENTIONS", DEFAULT_MENTIONS));
   const label = env("INPUT_LABEL").trim();
   let botLogin = env("INPUT_BOT_LOGIN").trim();
   if (!botLogin && eventName === "issues" && payloadAction(payload) === "assigned") {
@@ -1668,6 +1756,7 @@ async function main() {
     if ((await statusPorcelain(workspace)).length === 0) {
       return await publishAnswer();
     }
+    const implementerPaths = await statusPorcelain(workspace);
     let verifyOutput = null;
     let verifyFailed = false;
     if (verifyCommand) {
@@ -1728,15 +1817,21 @@ async function main() {
       }
     }
     let diffStat2 = "";
+    let diff = "";
     try {
       diffStat2 = await diffStat(workspace);
     } catch (error) {
       console.warn("Could not compute the diff stat:", error);
     }
+    try {
+      diff = truncate(await stagedDiff(workspace), MAX_REVIEW_DIFF);
+    } catch (error) {
+      console.warn("Could not compute the diff:", error);
+    }
     let reviewer = null;
     if (reviewEnabled) {
       const reviewRun = await runAgent({
-        prompt: buildReviewerPrompt(taskContext, { diffStat: diffStat2, verifyOutput }),
+        prompt: buildReviewerPrompt(taskContext, { diffStat: diffStat2, diff, verifyOutput }),
         workspace,
         maxTurns,
         model: model || void 0,
@@ -1760,6 +1855,13 @@ async function main() {
       finalVerifyOutput = truncate(verification.output, MAX_VERIFY_OUTPUT);
       finalVerifyFailed = verification.exitCode !== 0;
       verifyAfterReview = true;
+    }
+    const leftoverPaths = addedPaths(implementerPaths, await statusPorcelain(workspace));
+    if (leftoverPaths.length > 0) {
+      console.warn(
+        `Files appeared after the implementer finished (verification or review) and will be committed:
+${leftoverPaths.map((path) => `  ${path}`).join("\n")}`
+      );
     }
     await configureUser(
       workspace,
@@ -1806,7 +1908,8 @@ ${truncate(
           verifyFailed: finalVerifyFailed,
           verifyAfterReview,
           reviewer,
-          repair
+          repair,
+          leftoverFiles: leftoverPaths
         })
       });
       prUrl = pull.html_url;
@@ -1824,7 +1927,8 @@ ${truncate(
         subagentModelNote,
         repair,
         verifyCommand,
-        verifyFailed: finalVerifyFailed
+        verifyFailed: finalVerifyFailed,
+        leftoverFiles: leftoverPaths
       })
     );
     await react("rocket");
