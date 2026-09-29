@@ -11,6 +11,27 @@ import { spawn } from "node:child_process";
 
 const MAX_BUFFER = 64 * 1024 * 1024;
 const STDERR_TAIL_LENGTH = 2000;
+/** Grace period between SIGTERM and SIGKILL when a timed-out process ignores the first signal. */
+const KILL_GRACE_MS = 5_000;
+/** Timeout for the best-effort `cmdc --list-models` call (ms); a hung listing must not stall the run. */
+const LIST_MODELS_TIMEOUT_MS = 30_000;
+
+/** Default wall-clock limit for one agent process, in minutes. */
+export const DEFAULT_AGENT_TIMEOUT_MINUTES = 40;
+
+/**
+ * Parses the `agent-timeout-minutes` input into a positive number of minutes.
+ * Returns the fallback when the value is unset, not a number, or not positive.
+ */
+export function parseTimeoutMinutes(
+  value: string | undefined,
+  fallbackMinutes = DEFAULT_AGENT_TIMEOUT_MINUTES,
+): number {
+  if (value === undefined) return fallbackMinutes;
+  const minutes = Number(value.trim());
+  if (!Number.isFinite(minutes) || minutes <= 0) return fallbackMinutes;
+  return minutes;
+}
 
 export interface AgentUsage {
   [key: string]: number;
@@ -31,6 +52,8 @@ export interface RunAgentOptions {
   maxTurns: number;
   model?: string;
   env?: Record<string, string>;
+  /** Wall-clock limit for the process (ms). When it expires the process is killed. */
+  timeoutMs?: number;
 }
 
 export interface RunAgentOutcome {
@@ -110,6 +133,7 @@ interface SpawnOutcome {
   stdout: string;
   stderr: string;
   exitCode: number;
+  timedOut: boolean;
 }
 
 /**
@@ -162,7 +186,7 @@ export function agentEnv(
 function spawnAgent(
   binary: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; prompt: string },
+  options: { cwd: string; env: NodeJS.ProcessEnv; prompt: string; timeoutMs?: number },
 ): Promise<SpawnOutcome> {
   return new Promise((resolve) => {
     const child = spawn(binary, args, {
@@ -170,18 +194,69 @@ function spawnAgent(
       env: options.env,
       shell: process.platform === "win32",
       windowsHide: true,
+      // On POSIX the child leads its own process group (see `killTree`): the CLI
+      // spawns tool subprocesses, and they must be terminated together with it.
+      detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
     });
 
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    let killTimer: NodeJS.Timeout | undefined;
 
     const finish = (exitCode: number): void => {
       if (settled) return;
       settled = true;
-      resolve({ stdout, stderr, exitCode });
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+      if (killTimer !== undefined) clearTimeout(killTimer);
+      resolve({ stdout, stderr, exitCode, timedOut });
     };
+
+    /**
+     * Signal the child AND its descendants. Killing only the direct child
+     * leaves a tool subprocess holding the inherited stdout/stderr pipes, so
+     * the `close` event never fires and the timeout never actually bounds the
+     * wait. POSIX kills the process group; Windows falls back to taskkill /T.
+     */
+    const killTree = (signal: NodeJS.Signals): void => {
+      const pid = child.pid;
+      if (pid === undefined) return;
+      if (process.platform === "win32") {
+        const args = ["/pid", String(pid), "/t"];
+        if (signal === "SIGKILL") args.push("/f");
+        try {
+          spawn("taskkill", args, { stdio: "ignore", windowsHide: true }).on("error", () => {});
+        } catch {
+          child.kill();
+        }
+        return;
+      }
+      try {
+        process.kill(-pid, signal);
+      } catch {
+        try {
+          child.kill(signal);
+        } catch {
+          // already gone
+        }
+      }
+    };
+
+    const timeoutMs = options.timeoutMs ?? 0;
+    if (timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        stderr += `\nagent process exceeded its ${Math.round(timeoutMs / 60_000)}-minute wall-clock timeout; terminating it.`;
+        killTree("SIGTERM");
+        // Escalate when the process survives the polite signal.
+        killTimer = setTimeout(() => {
+          if (!settled) killTree("SIGKILL");
+        }, KILL_GRACE_MS);
+      }, timeoutMs);
+    }
 
     child.stdout?.on("data", (chunk: Buffer) => {
       // Keep the most recent output: the final {"type":"result"} frame is always
@@ -247,6 +322,7 @@ export async function listAvailableModels(
     cwd: process.cwd(),
     env: agentEnv(process.env, env),
     prompt: "",
+    timeoutMs: LIST_MODELS_TIMEOUT_MS,
   });
   if (exitCode !== 0) return null;
   const models = parseAvailableModels(stdout);
@@ -275,11 +351,24 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentOutcom
 
   const env = agentEnv(process.env, options.env ?? {});
 
-  const { stdout, stderr, exitCode } = await spawnAgent(binary, args, {
+  const { stdout, stderr, exitCode, timedOut } = await spawnAgent(binary, args, {
     cwd: options.workspace,
     env,
     prompt: options.prompt,
+    timeoutMs: options.timeoutMs,
   });
+
+  if (timedOut) {
+    const minutes = Math.max(1, Math.round((options.timeoutMs ?? 0) / 60_000));
+    return {
+      result: {
+        subtype: "error",
+        finalText: "",
+        error: `The agent process exceeded the ${minutes}-minute wall-clock timeout and was terminated. Raise the agent-timeout-minutes input if the task legitimately needs more time.`,
+      },
+      exitCode,
+    };
+  }
 
   const parsed = parseAgentStdout(stdout);
   if (parsed) return { result: parsed, exitCode };

@@ -10,6 +10,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
+import { fetchWithTimeout } from "./net";
 
 /** Pasted-image hosts: the current `user-attachments` and the legacy `user-images`. */
 const ATTACHMENT_PATTERN =
@@ -67,7 +68,7 @@ export async function downloadAttachments(urls: string[], token: string): Promis
     const url = urls[index];
     if (url === undefined) continue;
     try {
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: "application/octet-stream",

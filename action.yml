@@ -21,6 +21,10 @@ inputs:
     description: "Maximum number of agent turns per agent run (implementer and reviewer)."
     required: false
     default: "100"
+  agent-timeout-minutes:
+    description: "Wall-clock limit for each agent (cmdc) process, in minutes. On expiry the process is killed and the timeout is reported through the normal failure path. Should stay below the job's timeout-minutes."
+    required: false
+    default: "40"
   verify-command:
     description: 'Command run to verify the change (e.g. "npm ci && npm test"); runs after the implementer agent and again after the reviewer pass.'
     required: false
@@ -66,6 +70,7 @@ runs:
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_SUBAGENT_MODEL: ${{ inputs.subagent-model }}
         INPUT_MAX_TURNS: ${{ inputs.max-turns }}
+        INPUT_AGENT_TIMEOUT_MINUTES: ${{ inputs.agent-timeout-minutes }}
         INPUT_VERIFY_COMMAND: ${{ inputs.verify-command }}
         INPUT_REVIEW: ${{ inputs.review }}
         INPUT_COMMAND_CODE_API_KEY: ${{ inputs.command-code-api-key }}

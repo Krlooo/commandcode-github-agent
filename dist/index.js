@@ -5,6 +5,15 @@ import { readFileSync as readFileSync3 } from "node:fs";
 import { spawn } from "node:child_process";
 var MAX_BUFFER = 64 * 1024 * 1024;
 var STDERR_TAIL_LENGTH = 2e3;
+var KILL_GRACE_MS = 5e3;
+var LIST_MODELS_TIMEOUT_MS = 3e4;
+var DEFAULT_AGENT_TIMEOUT_MINUTES = 40;
+function parseTimeoutMinutes(value, fallbackMinutes = DEFAULT_AGENT_TIMEOUT_MINUTES) {
+  if (value === void 0) return fallbackMinutes;
+  const minutes = Number(value.trim());
+  if (!Number.isFinite(minutes) || minutes <= 0) return fallbackMinutes;
+  return minutes;
+}
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -92,16 +101,59 @@ function spawnAgent(binary, args, options) {
       env: options.env,
       shell: process.platform === "win32",
       windowsHide: true,
+      // On POSIX the child leads its own process group (see `killTree`): the CLI
+      // spawns tool subprocesses, and they must be terminated together with it.
+      detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"]
     });
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
+    let timeoutTimer;
+    let killTimer;
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
-      resolve({ stdout, stderr, exitCode });
+      if (timeoutTimer !== void 0) clearTimeout(timeoutTimer);
+      if (killTimer !== void 0) clearTimeout(killTimer);
+      resolve({ stdout, stderr, exitCode, timedOut });
     };
+    const killTree = (signal) => {
+      const pid = child.pid;
+      if (pid === void 0) return;
+      if (process.platform === "win32") {
+        const args2 = ["/pid", String(pid), "/t"];
+        if (signal === "SIGKILL") args2.push("/f");
+        try {
+          spawn("taskkill", args2, { stdio: "ignore", windowsHide: true }).on("error", () => {
+          });
+        } catch {
+          child.kill();
+        }
+        return;
+      }
+      try {
+        process.kill(-pid, signal);
+      } catch {
+        try {
+          child.kill(signal);
+        } catch {
+        }
+      }
+    };
+    const timeoutMs = options.timeoutMs ?? 0;
+    if (timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        stderr += `
+agent process exceeded its ${Math.round(timeoutMs / 6e4)}-minute wall-clock timeout; terminating it.`;
+        killTree("SIGTERM");
+        killTimer = setTimeout(() => {
+          if (!settled) killTree("SIGKILL");
+        }, KILL_GRACE_MS);
+      }, timeoutMs);
+    }
     child.stdout?.on("data", (chunk) => {
       stdout = (stdout + chunk.toString("utf8")).slice(-MAX_BUFFER);
     });
@@ -146,7 +198,8 @@ async function listAvailableModels(env2 = {}) {
   const { stdout, exitCode } = await spawnAgent(binary, ["--list-models"], {
     cwd: process.cwd(),
     env: agentEnv(process.env, env2),
-    prompt: ""
+    prompt: "",
+    timeoutMs: LIST_MODELS_TIMEOUT_MS
   });
   if (exitCode !== 0) return null;
   const models = parseAvailableModels(stdout);
@@ -166,11 +219,23 @@ async function runAgent(options) {
   ];
   if (options.model) args.push("-m", options.model);
   const env2 = agentEnv(process.env, options.env ?? {});
-  const { stdout, stderr, exitCode } = await spawnAgent(binary, args, {
+  const { stdout, stderr, exitCode, timedOut } = await spawnAgent(binary, args, {
     cwd: options.workspace,
     env: env2,
-    prompt: options.prompt
+    prompt: options.prompt,
+    timeoutMs: options.timeoutMs
   });
+  if (timedOut) {
+    const minutes = Math.max(1, Math.round((options.timeoutMs ?? 0) / 6e4));
+    return {
+      result: {
+        subtype: "error",
+        finalText: "",
+        error: `The agent process exceeded the ${minutes}-minute wall-clock timeout and was terminated. Raise the agent-timeout-minutes input if the task legitimately needs more time.`
+      },
+      exitCode
+    };
+  }
   const parsed = parseAgentStdout(stdout);
   if (parsed) return { result: parsed, exitCode };
   const stderrTail = tail(stderr, STDERR_TAIL_LENGTH);
@@ -187,6 +252,75 @@ ${stderrTail}` : `agent produced no result frame (exit code ${exitCode})`
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
+
+// src/net.ts
+import { setTimeout as delay } from "node:timers/promises";
+var DEFAULT_REQUEST_TIMEOUT_MS = 3e4;
+var MAX_ATTEMPTS = 3;
+var RETRY_BASE_DELAY_MS = 1e3;
+var MAX_RETRY_AFTER_MS = 6e4;
+function isRetryableStatus(status) {
+  return status === 429 || status >= 500 && status <= 599;
+}
+function isRateLimited(status, headers) {
+  if (status !== 403) return false;
+  return headers.get("retry-after") !== null || headers.get("x-ratelimit-remaining") === "0";
+}
+function shouldRetry(status, headers) {
+  if (isRetryableStatus(status)) return true;
+  return headers !== void 0 && isRateLimited(status, headers);
+}
+function retryDelayMs(attempt, baseDelayMs = RETRY_BASE_DELAY_MS) {
+  return baseDelayMs * 2 ** (Math.max(1, attempt) - 1);
+}
+function parseRetryAfterMs(value, maxMs = MAX_RETRY_AFTER_MS) {
+  if (value === null || value === void 0) return void 0;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return void 0;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1e3, maxMs);
+  const date = Date.parse(trimmed);
+  if (!Number.isNaN(date)) {
+    const delta = date - Date.now();
+    if (delta > 0) return Math.min(delta, maxMs);
+  }
+  return void 0;
+}
+async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, fetchImpl = fetch) {
+  return fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+}
+async function fetchWithRetry(url, init = {}, options = {}) {
+  const attempts = Math.max(1, options.attempts ?? MAX_ATTEMPTS);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const baseDelayMs = options.baseDelayMs ?? RETRY_BASE_DELAY_MS;
+  const maxRetryAfterMs = options.maxRetryAfterMs ?? MAX_RETRY_AFTER_MS;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const sleep = options.sleep ?? delay;
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let response;
+    try {
+      response = await fetchWithTimeout(url, init, timeoutMs, fetchImpl);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts) break;
+      const waitMs = retryDelayMs(attempt, baseDelayMs);
+      options.onRetry?.({ attempt, delayMs: waitMs, error });
+      await sleep(waitMs);
+      continue;
+    }
+    if (attempt < attempts && shouldRetry(response.status, response.headers)) {
+      const waitMs = parseRetryAfterMs(response.headers.get("retry-after"), maxRetryAfterMs) ?? retryDelayMs(attempt, baseDelayMs);
+      options.onRetry?.({ attempt, delayMs: waitMs, status: response.status });
+      await sleep(waitMs);
+      continue;
+    }
+    return response;
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "request failed"));
+}
+
+// src/attachments.ts
 var ATTACHMENT_PATTERN = /https:\/\/(?:github\.com\/user-attachments\/assets\/|user-images\.githubusercontent\.com\/)[^\s<>"'()]+/g;
 var TRAILING_PUNCTUATION = /[.,;:!?]+$/;
 function extractAttachmentUrls(body) {
@@ -220,7 +354,7 @@ async function downloadAttachments(urls, token) {
     const url = urls[index];
     if (url === void 0) continue;
     try {
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: "application/octet-stream"
@@ -699,7 +833,14 @@ var GitHubClient = class {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(body);
     }
-    const response = await fetch(`${this.apiBase}${path}`, init);
+    const response = await fetchWithRetry(`${this.apiBase}${path}`, init, {
+      onRetry: ({ attempt, delayMs, status, error }) => {
+        const reason = status !== void 0 ? `HTTP ${status}` : error instanceof Error ? error.message : String(error);
+        console.warn(
+          `GitHub API ${method} ${path} failed (${reason}); retrying in ${delayMs}ms (attempt ${attempt}).`
+        );
+      }
+    });
     if (!response.ok) {
       throw new Error(
         `GitHub API ${method} ${path} failed: ${response.status} ${await this.errorMessage(response)}`
@@ -1154,6 +1295,7 @@ async function main() {
   }
   const model = env("INPUT_MODEL");
   const maxTurns = Number.parseInt(env("INPUT_MAX_TURNS", "100"), 10) || 100;
+  const agentTimeoutMs = Math.round(parseTimeoutMinutes(env("INPUT_AGENT_TIMEOUT_MINUTES")) * 6e4);
   const verifyCommand = env("INPUT_VERIFY_COMMAND");
   const reviewEnabled = env("INPUT_REVIEW", "true").toLowerCase() === "true";
   const runUrl = `${env("GITHUB_SERVER_URL", "https://github.com")}/${trigger.owner}/${trigger.repo}/actions/runs/${env("GITHUB_RUN_ID")}`;
@@ -1338,7 +1480,8 @@ async function main() {
       workspace,
       maxTurns,
       model: model || void 0,
-      env: envOverrides
+      env: envOverrides,
+      timeoutMs: agentTimeoutMs
     });
     if (implementer.result.subtype === "error") {
       await comment(
@@ -1376,7 +1519,8 @@ async function main() {
         workspace,
         maxTurns,
         model: model || void 0,
-        env: envOverrides
+        env: envOverrides,
+        timeoutMs: agentTimeoutMs
       });
       reviewer = reviewRun.result;
       if (reviewer.subtype === "error") {
