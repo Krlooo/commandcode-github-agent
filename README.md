@@ -47,6 +47,7 @@ permissions:
 | --- | --- | --- |
 | `mentions` | `@commandcode-agent` | Comma-separated trigger strings; a comment containing one of them at a word boundary starts the agent. |
 | `model` | none | Model identifier passed to the Command Code CLI (`-m`). Required when `provider-api-key` is set. |
+| `subagent-model` | none | Model pinned for subagents the agent delegates to, not the session model. Ignored when the model is not available to the account, in which case subagents inherit the session model. |
 | `max-turns` | `100` | Maximum number of agent turns per agent run (implementer and reviewer). |
 | `verify-command` | none | Command run to verify the change (e.g. `npm ci && npm test`); runs after the implementer agent and again after the reviewer pass. |
 | `review` | `true` | Run the reviewer agent pass after verification (`true`/`false`). |
@@ -117,6 +118,12 @@ This path takes precedence over the BYOK inputs below.
 ### BYOK provider (alternative)
 
 When `provider-api-key` is set, the action writes `~/.commandcode/providers.json` with a `$VAR` reference, so the key itself never lands in the file. The CLI receives it through `CMD_AGENT_PROVIDER_KEY`, alongside `CMD_LOCAL_ONLY=1` to keep the CLI from contacting Command Code's own services. The file uses the CLI's `{ "provider": { "<id>": ... } }` shape; a legacy `providers` key is migrated on write. With no key, the file is left untouched and the CLI keeps its existing configuration.
+
+### Subagent model (optional)
+
+By default the subagents the agent delegates to run on the session model. To pin a separate model for them, set `subagent-model` to any id the CLI accepts, or commit a repository default in `.commandcode/subagent-model` (a plain text file holding one model id, `#` comments allowed). The action input wins over the repository file.
+
+Before the agents run, the action asks the CLI for the models available to the account (`cmdc --list-models`, which also reports BYOK provider models) and checks the configured value against that list. When the model is available it writes a small agent file under `.commandcode/agents/` with the `model` field set; the file is removed again at the end of the run. When the model is missing, the action logs a warning, notes it in the final report, and continues with subagents on the session model, so a stale or mistyped id never fails a run. This is independent of `model`, which sets the session model.
 
 ## Security
 

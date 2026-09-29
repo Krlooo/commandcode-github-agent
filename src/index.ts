@@ -10,7 +10,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { runAgent, type AgentResult } from "./agent";
+import { runAgent, listAvailableModels, type AgentResult } from "./agent";
 import { downloadAttachments, extractAttachmentUrls } from "./attachments";
 import { setupAgentAuth } from "./auth";
 import { parseTrigger, type Trigger } from "./event";
@@ -27,6 +27,7 @@ import {
   truncate,
 } from "./report";
 import { collectSecrets, scrubSecrets } from "./scrub";
+import { configureSubagentModel, readRepositoryModel } from "./subagent";
 import { runVerification } from "./verify";
 
 const MAX_VERIFY_OUTPUT = 20000;
@@ -164,6 +165,10 @@ export async function main(): Promise<number> {
     }
   };
 
+  // Removes the generated subagent agent file on every exit path.
+  let cleanupSubagent = (): void => {};
+  let subagentModelNote: string | undefined;
+
   try {
     // 2) Permission gate: only collaborators with write/admin may trigger.
     let permission: "admin" | "write" | "read" | "none";
@@ -298,6 +303,27 @@ export async function main(): Promise<number> {
     // and pull requests with the gh CLI. The write token never enters its env.
     const agentReadToken = env("INPUT_AGENT_TOKEN");
     if (agentReadToken) envOverrides["GH_TOKEN"] = agentReadToken;
+
+    // Pin a model for delegated subagents when one is configured and available.
+    // An unavailable or unlisted model is a warning, never a failure: the run
+    // continues and subagents inherit the session model. The generated agent
+    // file must exist before the implementer session starts (files are
+    // re-scanned each turn) and is removed again on every exit path.
+    try {
+      const subagent = await configureSubagentModel({
+        workspace,
+        models: {
+          input: env("INPUT_SUBAGENT_MODEL"),
+          repository: readRepositoryModel(workspace),
+        },
+        listModels: () => listAvailableModels(envOverrides),
+        warn: (message) => console.warn(scrubSecrets(message, secrets)),
+      });
+      cleanupSubagent = subagent.cleanup;
+      subagentModelNote = subagent.warning;
+    } catch (error) {
+      logError("Could not configure the subagent model (continuing):", error);
+    }
 
     const taskContext: TaskContext = {
       owner: trigger.owner,
@@ -466,6 +492,7 @@ export async function main(): Promise<number> {
         reviewer,
         startedAt,
         runUrl,
+        subagentModelNote,
       }),
     );
     await react("rocket");
@@ -477,6 +504,8 @@ export async function main(): Promise<number> {
     );
     await react("-1");
     return 1;
+  } finally {
+    cleanupSubagent();
   }
 }
 

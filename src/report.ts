@@ -100,6 +100,8 @@ export interface ReportOptions {
   reviewer: AgentResult | null;
   startedAt: number;
   runUrl: string;
+  /** Set when a configured subagent model could not be used. */
+  subagentModelNote?: string;
 }
 
 export function buildReport(options: ReportOptions): string {
@@ -110,6 +112,8 @@ export function buildReport(options: ReportOptions): string {
   else if (options.isPullRequest) lines.push("Changes were pushed to the pull request branch.");
 
   lines.push(`Model: ${options.model || "(default)"}`);
+
+  if (options.subagentModelNote) lines.push(options.subagentModelNote);
 
   const sessions: string[] = [];
   if (options.implementer.sessionId) sessions.push(`implementer ${options.implementer.sessionId}`);

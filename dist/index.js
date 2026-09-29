@@ -1,5 +1,5 @@
 // src/index.ts
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 
 // src/agent.ts
 import { spawn } from "node:child_process";
@@ -121,6 +121,36 @@ ${error.message}`;
     child.stdin?.end(`${options.prompt}
 `);
   });
+}
+function parseAvailableModels(output) {
+  const ids = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (line.trim().length === 0) continue;
+    if (line.startsWith("Pass the full id")) break;
+    if (line.startsWith("Docs:")) break;
+    if (line.startsWith("Decision models")) break;
+    const match = /^(\S+)[ \t]{2,}\S/.exec(line);
+    const id = match?.[1];
+    if (!id) continue;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/.test(id)) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+async function listAvailableModels(env2 = {}) {
+  const binary = process.platform === "win32" ? "cmdc.cmd" : "cmdc";
+  const { stdout, exitCode } = await spawnAgent(binary, ["--list-models"], {
+    cwd: process.cwd(),
+    env: agentEnv(process.env, env2),
+    prompt: ""
+  });
+  if (exitCode !== 0) return null;
+  const models = parseAvailableModels(stdout);
+  return models.length > 0 ? models : null;
 }
 async function runAgent(options) {
   const binary = process.platform === "win32" ? "cmdc.cmd" : "cmdc";
@@ -862,6 +892,7 @@ function buildReport(options) {
   if (options.prUrl) lines.push(`Pull request: ${options.prUrl}`);
   else if (options.isPullRequest) lines.push("Changes were pushed to the pull request branch.");
   lines.push(`Model: ${options.model || "(default)"}`);
+  if (options.subagentModelNote) lines.push(options.subagentModelNote);
   const sessions = [];
   if (options.implementer.sessionId) sessions.push(`implementer ${options.implementer.sessionId}`);
   if (options.reviewer?.sessionId) sessions.push(`reviewer ${options.reviewer.sessionId}`);
@@ -886,6 +917,129 @@ function scrubSecrets(text, secrets) {
     scrubbed = scrubbed.split(secret).join("***");
   }
   return scrubbed;
+}
+
+// src/subagent.ts
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname, join as join3 } from "node:path";
+var SUBAGENT_AGENT_NAME = "commandcode-subagent";
+var SUBAGENT_AGENT_PATH = `.commandcode/agents/${SUBAGENT_AGENT_NAME}.md`;
+var REPOSITORY_MODEL_FILE = ".commandcode/subagent-model";
+function readRepositoryModel(workspace) {
+  const file = join3(workspace, REPOSITORY_MODEL_FILE);
+  if (!existsSync2(file)) return void 0;
+  try {
+    const value = readFileSync2(file, "utf8").split(/\r?\n/).map((line) => line.replace(/#.*$/, "").trim()).find((line) => line.length > 0);
+    return value && value.toLowerCase() !== "inherit" ? value : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function resolveAvailableModel(requested, available) {
+  const wanted = requested.trim().toLowerCase();
+  if (wanted.length === 0) return void 0;
+  for (const id of available) {
+    const listed = id.trim();
+    const lower = listed.toLowerCase();
+    if (lower === wanted || lower.slice(lower.lastIndexOf("/") + 1) === wanted) return listed;
+  }
+  return void 0;
+}
+function agentFileContents(model) {
+  return [
+    "---",
+    `name: ${SUBAGENT_AGENT_NAME}`,
+    'description: "General-purpose worker for tasks the main agent delegates. Use it when you hand implementation, exploration or research to a subagent."',
+    `model: ${model}`,
+    'tools: "*"',
+    "---",
+    "",
+    "You are a general-purpose subagent working inside this repository. Complete the task you are given, follow the repository's own conventions, and finish with a concise summary of what you did.",
+    ""
+  ].join("\n");
+}
+function addGitExclude(workspace, relativePath) {
+  const infoDir = join3(workspace, ".git", "info");
+  if (!existsSync2(infoDir)) return false;
+  const file = join3(infoDir, "exclude");
+  const entry = `/${relativePath}`;
+  let content = "";
+  try {
+    content = existsSync2(file) ? readFileSync2(file, "utf8") : "";
+  } catch {
+    return false;
+  }
+  if (content.split(/\r?\n/).some((line) => line.trim() === entry)) return false;
+  const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
+  try {
+    writeFileSync2(file, `${content}${separator}${entry}
+`, "utf8");
+  } catch {
+    return false;
+  }
+  return true;
+}
+function removeGitExclude(workspace, relativePath, added) {
+  if (!added) return;
+  const file = join3(workspace, ".git", "info", "exclude");
+  const entry = `/${relativePath}`;
+  try {
+    const content = readFileSync2(file, "utf8");
+    const next = content.split(/\r?\n/).filter((line) => line.trim() !== entry).join("\n");
+    writeFileSync2(file, next, "utf8");
+  } catch {
+  }
+}
+async function configureSubagentModel(options) {
+  const noop = () => {
+  };
+  const warn = options.warn ?? (() => {
+  });
+  const requested = (options.models.input ?? "").trim() || (options.models.repository ?? "").trim();
+  if (requested.length === 0 || requested.toLowerCase() === "inherit") {
+    return { cleanup: noop };
+  }
+  let available;
+  try {
+    available = await options.listModels();
+  } catch {
+    available = null;
+  }
+  if (!available) {
+    const warning = `Could not list the models available to this account; subagents inherit the session model instead of using "${requested}".`;
+    warn(warning);
+    return { warning, cleanup: noop };
+  }
+  const model = resolveAvailableModel(requested, available);
+  if (!model) {
+    const warning = `Subagent model "${requested}" is not available to this account; subagents inherit the session model instead. Set "subagent-model" to a model the account can use to pin one.`;
+    warn(warning);
+    return { warning, cleanup: noop };
+  }
+  const filePath = join3(options.workspace, SUBAGENT_AGENT_PATH);
+  if (existsSync2(filePath)) {
+    const warning = `An agent file already exists at ${SUBAGENT_AGENT_PATH}; leaving it untouched instead of overwriting it.`;
+    warn(warning);
+    return { warning, cleanup: noop };
+  }
+  const excluded = addGitExclude(options.workspace, SUBAGENT_AGENT_PATH);
+  try {
+    mkdirSync2(dirname(filePath), { recursive: true });
+    writeFileSync2(filePath, agentFileContents(model), "utf8");
+  } catch (error) {
+    removeGitExclude(options.workspace, SUBAGENT_AGENT_PATH, excluded);
+    const warning = `Could not write the subagent agent file (${error instanceof Error ? error.message : String(error)}); subagents inherit the session model instead.`;
+    warn(warning);
+    return { warning, cleanup: noop };
+  }
+  const cleanup = () => {
+    try {
+      rmSync(filePath, { force: true });
+    } catch {
+    }
+    removeGitExclude(options.workspace, SUBAGENT_AGENT_PATH, excluded);
+  };
+  return { model, filePath, cleanup };
 }
 
 // src/verify.ts
@@ -976,7 +1130,7 @@ async function main() {
   let payload = {};
   if (eventPath) {
     try {
-      payload = JSON.parse(readFileSync2(eventPath, "utf8"));
+      payload = JSON.parse(readFileSync3(eventPath, "utf8"));
     } catch (error) {
       logError("Could not read the GitHub event payload:", error);
       return 0;
@@ -1029,6 +1183,9 @@ async function main() {
       console.warn("Failed to add a reaction:", error);
     }
   };
+  let cleanupSubagent = () => {
+  };
+  let subagentModelNote;
   try {
     let permission;
     try {
@@ -1140,6 +1297,21 @@ async function main() {
     }
     const agentReadToken = env("INPUT_AGENT_TOKEN");
     if (agentReadToken) envOverrides["GH_TOKEN"] = agentReadToken;
+    try {
+      const subagent = await configureSubagentModel({
+        workspace,
+        models: {
+          input: env("INPUT_SUBAGENT_MODEL"),
+          repository: readRepositoryModel(workspace)
+        },
+        listModels: () => listAvailableModels(envOverrides),
+        warn: (message) => console.warn(scrubSecrets(message, secrets))
+      });
+      cleanupSubagent = subagent.cleanup;
+      subagentModelNote = subagent.warning;
+    } catch (error) {
+      logError("Could not configure the subagent model (continuing):", error);
+    }
     const taskContext = {
       owner: trigger.owner,
       repo: trigger.repo,
@@ -1274,7 +1446,8 @@ ${truncate(
         implementer: implementer.result,
         reviewer,
         startedAt,
-        runUrl
+        runUrl,
+        subagentModelNote
       })
     );
     await react("rocket");
@@ -1290,6 +1463,8 @@ ${truncate(errorMessage(error), MAX_PR_VERIFY_OUTPUT)}
     );
     await react("-1");
     return 1;
+  } finally {
+    cleanupSubagent();
   }
 }
 main().then((code) => {
