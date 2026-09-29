@@ -5,6 +5,7 @@ import {
   MAX_CONTEXT_COMMENTS,
   type TaskContext,
 } from "../src/prompt";
+import { SUBAGENT_AGENT_NAME } from "../src/subagent";
 
 function context(overrides: Partial<TaskContext> = {}): TaskContext {
   return {
@@ -64,6 +65,16 @@ describe("buildImplementerPrompt", () => {
     expect(withToken).toContain("gh issue view");
     expect(withToken).toMatch(/already asked or answered/i);
     expect(without).not.toContain("gh issue view");
+  });
+
+  it("tells the agent to delegate to the pinned subagent when a pin is active", () => {
+    const prompt = buildImplementerPrompt(context({ subagentAgent: SUBAGENT_AGENT_NAME }));
+    expect(prompt).toContain(`subagent_type: ${SUBAGENT_AGENT_NAME}`);
+  });
+
+  it("leaves delegation to the built-in agents when no pin is active", () => {
+    const prompt = buildImplementerPrompt(context());
+    expect(prompt).not.toContain("subagent_type");
   });
 
   it("asks for plain, human-sounding prose", () => {

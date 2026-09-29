@@ -29,6 +29,12 @@ export interface TaskContext {
   attachments?: string[];
   /** True when a read-only GitHub token is available to the agent (gh CLI). */
   ghReadAccess?: boolean;
+  /**
+   * Name of the generated subagent agent whose model is pinned. When set, the
+   * implementer is told to delegate with this `subagent_type` so the pin takes
+   * effect; when unset (no pin) delegation is left to the built-in agents.
+   */
+  subagentAgent?: string;
 }
 
 export const MAX_CONTEXT_COMMENTS = 30;
@@ -127,6 +133,11 @@ export function buildImplementerPrompt(ctx: TaskContext): string {
   if (ctx.ghReadAccess) {
     lines.push(
       "- This repository's issues and pull requests are readable with the gh CLI (GH_TOKEN is set): gh issue view <n>, gh pr view <n>, gh search. Use it when the task references them, and before answering a question, check whether it was already asked or answered in an issue or pull request: if it was, say where (issue or PR number) and what the conclusion was.",
+    );
+  }
+  if (ctx.subagentAgent) {
+    lines.push(
+      `- When you delegate work to a subagent, pass subagent_type: ${ctx.subagentAgent} so the subagent uses the pinned subagent model.`,
     );
   }
   lines.push(
