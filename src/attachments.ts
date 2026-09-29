@@ -19,6 +19,55 @@ const ATTACHMENT_PATTERN =
 /** Punctuation a URL can pick up from the surrounding prose or markdown. */
 const TRAILING_PUNCTUATION = /[.,;:!?]+$/;
 
+/** Maximum size downloaded for a single attachment; a larger response is skipped. */
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+/** True when a response content type is an image; parameters (`; charset=`) are ignored. */
+export function isImageContentType(contentType: string | null): boolean {
+  if (contentType === null) return false;
+  return contentType.split(";")[0]?.trim().toLowerCase().startsWith("image/") ?? false;
+}
+
+/**
+ * Reads a response body up to `maxBytes`, returning `null` when it is larger.
+ * The declared `content-length` is checked first, then the stream is read in
+ * chunks and cancelled as soon as the cap is exceeded, so an oversized or
+ * endless body is never buffered in full.
+ */
+export async function readAtMost(response: Response, maxBytes: number): Promise<Buffer | null> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel();
+    return null;
+  }
+
+  const body = response.body;
+  if (body === null) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer.byteLength > maxBytes ? null : buffer;
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks);
+}
+
 /**
  * Extracts the (deduplicated) attachment image URLs from a comment body, in
  * first-seen order. Trailing sentence punctuation is stripped.
@@ -71,15 +120,29 @@ export async function downloadAttachments(urls: string[], token: string): Promis
       const response = await fetchWithTimeout(url, {
         headers: {
           Authorization: `Bearer ${token}`,
-          Accept: "application/octet-stream",
+          Accept: "image/*",
         },
       });
       if (!response.ok) {
         console.warn(`Could not download attachment ${url}: HTTP ${response.status}`);
         continue;
       }
-      const bytes = Buffer.from(await response.arrayBuffer());
-      const extension = extensionFor(url, response.headers.get("content-type"));
+      const contentType = response.headers.get("content-type");
+      if (!isImageContentType(contentType)) {
+        await response.body?.cancel();
+        console.warn(
+          `Skipping attachment ${url}: content type ${contentType ?? "(none)"} is not an image`,
+        );
+        continue;
+      }
+      const bytes = await readAtMost(response, MAX_ATTACHMENT_BYTES);
+      if (bytes === null) {
+        console.warn(
+          `Skipping attachment ${url}: larger than the ${MAX_ATTACHMENT_BYTES} byte limit`,
+        );
+        continue;
+      }
+      const extension = extensionFor(url, contentType);
       const path = join(directory, `image-${index}.${extension}`);
       await writeFile(path, bytes);
       paths.push(path);

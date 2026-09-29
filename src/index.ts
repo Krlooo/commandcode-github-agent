@@ -16,6 +16,7 @@ import { setupAgentAuth } from "./auth";
 import { parseTrigger, repositoryIdentity, type Trigger } from "./event";
 import * as git from "./git";
 import { GitHubClient } from "./github";
+import { DEFAULT_MENTIONS, parseMentions } from "./mentions";
 import {
   buildFreshRepairPrompt,
   buildImplementerPrompt,
@@ -43,6 +44,8 @@ import {
 import { runVerification } from "./verify";
 
 const MAX_VERIFY_OUTPUT = 20000;
+/** Cap for the diff handed to the reviewer; a larger one is truncated with a marker. */
+const MAX_REVIEW_DIFF = 40000;
 
 function env(name: string, fallback = ""): string {
   const value = process.env[name];
@@ -57,14 +60,6 @@ function errorMessage(error: unknown): string {
   } catch {
     return String(error);
   }
-}
-
-function parseMentions(value: string): string[] {
-  const mentions = value
-    .split(",")
-    .map((mention) => mention.trim())
-    .filter((mention) => mention.length > 0);
-  return mentions.length > 0 ? mentions : ["@commandcode-agent"];
 }
 
 function payloadAction(payload: unknown): string {
@@ -125,7 +120,7 @@ export async function main(): Promise<number> {
     }
   }
 
-  const mentions = parseMentions(env("INPUT_MENTIONS", "/cmd,/commandcode"));
+  const mentions = parseMentions(env("INPUT_MENTIONS", DEFAULT_MENTIONS));
   const label = env("INPUT_LABEL").trim();
 
   // An `issues: assigned` trigger must mean "assigned to this app", so resolve
@@ -415,6 +410,10 @@ export async function main(): Promise<number> {
     if ((await git.statusPorcelain(workspace)).length === 0) {
       return await publishAnswer();
     }
+    // Snapshot the paths the implementer produced, so anything that appears
+    // later (verification and review run the project's own commands) can be
+    // named before `git add -A` commits it.
+    const implementerPaths = await git.statusPorcelain(workspace);
 
     // 8) Verification command (never throws), with a restricted environment.
     let verifyOutput: string | null = null;
@@ -492,19 +491,27 @@ export async function main(): Promise<number> {
       }
     }
 
-    // Diff stat for the reviewer (stages all files).
+    // Diff for the reviewer (stages all files): the file-level stat plus the
+    // change itself. The full diff is truncated with a visible marker, like the
+    // verification output, so a large change is never silently dropped.
     let diffStat = "";
+    let diff = "";
     try {
       diffStat = await git.diffStat(workspace);
     } catch (error) {
       console.warn("Could not compute the diff stat:", error);
+    }
+    try {
+      diff = truncate(await git.stagedDiff(workspace), MAX_REVIEW_DIFF);
+    } catch (error) {
+      console.warn("Could not compute the diff:", error);
     }
 
     // 9) Reviewer agent with a fresh session.
     let reviewer: AgentResult | null = null;
     if (reviewEnabled) {
       const reviewRun = await runAgent({
-        prompt: buildReviewerPrompt(taskContext, { diffStat, verifyOutput }),
+        prompt: buildReviewerPrompt(taskContext, { diffStat, diff, verifyOutput }),
         workspace,
         maxTurns,
         model: model || undefined,
@@ -537,7 +544,19 @@ export async function main(): Promise<number> {
       verifyAfterReview = true;
     }
 
-    // 10) Commit and push.
+    // 10) Commit and push. Surface anything that appeared after the implementer
+    // finished before `git add -A` commits it: the verification and review steps
+    // run the project's own commands and can leave build output, caches or
+    // coverage behind. Reported, never deleted automatically.
+    const leftoverPaths = git.addedPaths(implementerPaths, await git.statusPorcelain(workspace));
+    if (leftoverPaths.length > 0) {
+      console.warn(
+        `Files appeared after the implementer finished (verification or review) and will be committed:\n${leftoverPaths
+          .map((path) => `  ${path}`)
+          .join("\n")}`,
+      );
+    }
+
     await git.configureUser(
       workspace,
       "commandcode-agent[bot]",
@@ -594,6 +613,7 @@ export async function main(): Promise<number> {
           verifyAfterReview,
           reviewer,
           repair,
+          leftoverFiles: leftoverPaths,
         }),
       });
       prUrl = pull.html_url;
@@ -614,6 +634,7 @@ export async function main(): Promise<number> {
         repair,
         verifyCommand,
         verifyFailed: finalVerifyFailed,
+        leftoverFiles: leftoverPaths,
       }),
     );
     await react("rocket");

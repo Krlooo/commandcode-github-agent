@@ -4,6 +4,7 @@ import {
   buildPullRequestBody,
   buildReport,
   repairSummary,
+  truncate,
   type PullRequestBodyOptions,
   type ReportOptions,
 } from "../src/report";
@@ -131,5 +132,36 @@ describe("buildReport verification status", () => {
   it("omits the verification line when no command is configured", () => {
     const text = report({ verifyCommand: "", repair: null });
     expect(text).not.toContain("Verification:");
+  });
+});
+
+describe("leftover file reporting", () => {
+  it("lists the files created during verification or review in the pull request body", () => {
+    const text = body({ leftoverFiles: ["coverage/index.html", "dist/index.js.map"] });
+    expect(text).toContain("Files created during verification or review");
+    expect(text).toContain("- coverage/index.html");
+    expect(text).toContain("- dist/index.js.map");
+  });
+
+  it("omits the section when nothing was left behind", () => {
+    expect(body()).not.toContain("Files created during verification or review");
+  });
+
+  it("names the files in the final report comment", () => {
+    const text = report({ leftoverFiles: ["coverage/index.html"] });
+    expect(text).toContain("after the implementer finished");
+    expect(text).toContain("coverage/index.html");
+  });
+});
+
+describe("truncate", () => {
+  it("leaves short text untouched", () => {
+    expect(truncate("abc", 10)).toBe("abc");
+  });
+
+  it("marks where it cut a long text so the omission is visible", () => {
+    const result = truncate("a".repeat(20), 5);
+    expect(result.startsWith("aaaaa")).toBe(true);
+    expect(result).toContain("...(truncated 15 characters)");
   });
 });

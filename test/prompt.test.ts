@@ -145,6 +145,34 @@ describe("buildReviewerPrompt", () => {
     expect(prompt).toContain("18 passed");
   });
 
+  it("includes the actual diff when one is provided", () => {
+    const prompt = buildReviewerPrompt(context(), {
+      diffStat: " src/auth.ts | 12 ++++++------",
+      diff: "diff --git a/src/auth.ts b/src/auth.ts\n-const enabled = true;\n+const enabled = false;",
+      verifyOutput: null,
+    });
+    expect(prompt).toContain("diff --git a/src/auth.ts b/src/auth.ts");
+    expect(prompt).toContain("-const enabled = true;");
+    expect(prompt).toContain("+const enabled = false;");
+  });
+
+  it("falls back to the diff stat when no full diff was captured", () => {
+    const prompt = buildReviewerPrompt(context(), {
+      diffStat: " src/auth.ts | 12 ++++++------",
+      verifyOutput: null,
+    });
+    expect(prompt).toContain("src/auth.ts | 12");
+  });
+
+  it("tells the reviewer to audit the diff, not only the final files", () => {
+    const prompt = buildReviewerPrompt(context(), {
+      diffStat: "",
+      diff: "diff --git a/x b/x",
+      verifyOutput: null,
+    });
+    expect(prompt).toMatch(/base your audit on the diff/i);
+  });
+
   it("states the reviewer must verify the requirement and fix gaps", () => {
     const prompt = buildReviewerPrompt(context(), { diffStat: "", verifyOutput: null });
     expect(prompt).toContain("fix");

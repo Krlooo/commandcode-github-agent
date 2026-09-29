@@ -87,13 +87,32 @@ export async function push(cwd: string, url: string | undefined, branch: string)
 }
 
 export async function statusPorcelain(cwd: string): Promise<string[]> {
-  const output = await git(cwd, ["status", "--porcelain"]);
+  // `--untracked-files=all` lists every file inside an untracked directory
+  // rather than collapsing it to a single `dir/` entry, so leftovers inside a
+  // new build or coverage directory are named individually.
+  const output = await git(cwd, ["status", "--porcelain", "--untracked-files=all"]);
   return output
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) => line.length > 0)
     .map((line) => line.slice(3).trim())
     .filter((path) => path.length > 0);
+}
+
+/**
+ * Paths present in `after` but not in `before`, in `after` order and without
+ * duplicates. Used to name the files that appeared while verification and review
+ * ran, so they are reported before `git add -A` commits them.
+ */
+export function addedPaths(before: string[], after: string[]): string[] {
+  const known = new Set(before);
+  const added: string[] = [];
+  for (const path of after) {
+    if (known.has(path)) continue;
+    known.add(path);
+    added.push(path);
+  }
+  return added;
 }
 
 export async function diffStat(cwd: string): Promise<string> {
@@ -104,6 +123,22 @@ export async function diffStat(cwd: string): Promise<string> {
   // semantics for the reviewer are the same as before the harness ran.
   await git(cwd, ["reset"]);
   return output.trim();
+}
+
+/**
+ * The complete staged diff, untracked files included (stages everything first,
+ * then restores the index like {@link diffStat}). This is the change itself, not
+ * just the file-level summary, so the reviewer can spot removals and modified
+ * lines the stat would hide.
+ */
+export async function stagedDiff(cwd: string): Promise<string> {
+  await addAll(cwd);
+  try {
+    const output = await git(cwd, ["diff", "--cached"]);
+    return output.trim();
+  } finally {
+    await git(cwd, ["reset"]);
+  }
 }
 
 /**

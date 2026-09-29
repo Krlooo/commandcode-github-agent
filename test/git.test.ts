@@ -1,10 +1,18 @@
 import { execFile, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { basicAuthHeader, configureAuth, unsetAuth, workingTreeFingerprint } from "../src/git";
+import {
+  addedPaths,
+  basicAuthHeader,
+  configureAuth,
+  stagedDiff,
+  statusPorcelain,
+  unsetAuth,
+  workingTreeFingerprint,
+} from "../src/git";
 
 const execFileAsync = promisify(execFile);
 const EXTRA_HEADER = "http.https://github.com/.extraheader";
@@ -85,5 +93,48 @@ describe("workingTreeFingerprint", () => {
 
     const { stdout } = await execFileAsync("git", ["diff", "--cached", "--name-only"], { cwd: dir });
     expect(stdout.trim()).toBe("");
+  });
+});
+
+describe("stagedDiff", () => {
+  it("returns the change itself, not the file-level stat", async () => {
+    const dir = committedRepo();
+    writeFileSync(join(dir, "tracked.txt"), "one\ntwo\n");
+
+    const diff = await stagedDiff(dir);
+    expect(diff).toContain("diff --git a/tracked.txt b/tracked.txt");
+    expect(diff).toContain("+two");
+  });
+
+  it("includes untracked files and leaves the index unstaged", async () => {
+    const dir = committedRepo();
+    writeFileSync(join(dir, "new.txt"), "added\n");
+
+    const diff = await stagedDiff(dir);
+    expect(diff).toContain("new.txt");
+    expect(diff).toContain("+added");
+
+    const { stdout } = await execFileAsync("git", ["diff", "--cached", "--name-only"], { cwd: dir });
+    expect(stdout.trim()).toBe("");
+  });
+});
+
+describe("addedPaths", () => {
+  it("returns the paths present only after the snapshot, in order", () => {
+    expect(addedPaths(["a.ts", "b.ts"], ["b.ts", "c.ts", "d.ts"])).toEqual(["c.ts", "d.ts"]);
+  });
+
+  it("returns nothing when the snapshots match", () => {
+    expect(addedPaths(["a.ts"], ["a.ts"])).toEqual([]);
+  });
+});
+
+describe("statusPorcelain", () => {
+  it("lists files inside an untracked directory individually", async () => {
+    const dir = committedRepo();
+    mkdirSync(join(dir, "coverage"));
+    writeFileSync(join(dir, "coverage", "index.html"), "<html></html>\n");
+
+    expect(await statusPorcelain(dir)).toContain("coverage/index.html");
   });
 });
