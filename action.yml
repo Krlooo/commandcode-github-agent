@@ -14,6 +14,9 @@ inputs:
   model:
     description: "Model identifier passed to the Command Code CLI (-m). Required when provider-api-key is set."
     required: false
+  subagent-model:
+    description: "Model pinned for subagents the agent delegates to, not the session model. Ignored when the model is not available to the account (subagents then inherit the session model)."
+    required: false
   max-turns:
     description: "Maximum number of agent turns per agent run (implementer and reviewer)."
     required: false
@@ -61,6 +64,7 @@ runs:
       env:
         INPUT_MENTIONS: ${{ inputs.mentions }}
         INPUT_MODEL: ${{ inputs.model }}
+        INPUT_SUBAGENT_MODEL: ${{ inputs.subagent-model }}
         INPUT_MAX_TURNS: ${{ inputs.max-turns }}
         INPUT_VERIFY_COMMAND: ${{ inputs.verify-command }}
         INPUT_REVIEW: ${{ inputs.review }}

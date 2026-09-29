@@ -206,6 +206,54 @@ function spawnAgent(
 }
 
 /**
+ * Extracts the model ids from `cmdc --list-models` output. Lines are
+ * `id<padding>description`, id first; category headings, the header, the
+ * trailing short-name usage examples and the decision-model section are not
+ * model ids and are skipped.
+ */
+export function parseAvailableModels(output: string): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (line.trim().length === 0) continue;
+    if (line.startsWith("Pass the full id")) break;
+    if (line.startsWith("Docs:")) break;
+    if (line.startsWith("Decision models")) break;
+
+    const match = /^(\S+)[ \t]{2,}\S/.exec(line);
+    const id = match?.[1];
+    if (!id) continue;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:\/-]*$/.test(id)) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+
+  return ids;
+}
+
+/**
+ * Asks the CLI for the models available to the account (including BYOK provider
+ * models when a provider is configured). Returns `null` when the listing could
+ * not be produced, so callers fall back instead of failing.
+ */
+export async function listAvailableModels(
+  env: Record<string, string> = {},
+): Promise<string[] | null> {
+  const binary = process.platform === "win32" ? "cmdc.cmd" : "cmdc";
+  const { stdout, exitCode } = await spawnAgent(binary, ["--list-models"], {
+    cwd: process.cwd(),
+    env: agentEnv(process.env, env),
+    prompt: "",
+  });
+  if (exitCode !== 0) return null;
+  const models = parseAvailableModels(stdout);
+  return models.length > 0 ? models : null;
+}
+
+/**
  * Runs the Command Code CLI headlessly against a workspace, with the prompt
  * piped through stdin. Never throws on a non-zero exit: the exit code is
  * returned instead.
